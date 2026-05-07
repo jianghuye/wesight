@@ -181,6 +181,10 @@ git push origin v2026.4.8-alpha.1
 
 WeSight 使用 Electron 进程隔离架构。Renderer 不直接访问 Node.js 能力，所有高权限操作都通过 preload bridge 和 main process IPC 完成。
 
+<p align="center">
+  <img src="public/readme-architecture.svg" alt="WeSight 架构原理图" width="960">
+</p>
+
 ### Main Process
 
 - 窗口生命周期和托盘

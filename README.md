@@ -180,6 +180,10 @@ The website download button can point to the latest release URL so users always 
 
 WeSight uses Electron process isolation. The renderer never directly accesses Node.js APIs; all privileged operations go through a typed preload bridge and IPC handlers in the main process.
 
+<p align="center">
+  <img src="public/readme-architecture.svg" alt="WeSight architecture principle diagram" width="960">
+</p>
+
 ### Main Process
 
 - Window lifecycle and tray behavior

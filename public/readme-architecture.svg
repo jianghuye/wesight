@@ -1,0 +1,128 @@
+<svg width="1280" height="760" viewBox="0 0 1280 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">WeSight architecture principle diagram</title>
+  <desc id="desc">WeSight uses an Electron renderer, a typed preload bridge, a main process, and an agent engine router to run Claude Code, Codex, OpenClaw, Hermes Agent, and the built-in Claude Agent SDK with local configuration, SQLite persistence, skills, and scheduled tasks.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#07111f"/>
+      <stop offset="0.48" stop-color="#0f2137"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="154" y1="144" x2="1126" y2="624" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#57d6ff"/>
+      <stop offset="0.5" stop-color="#8ef2c6"/>
+      <stop offset="1" stop-color="#ffd166"/>
+    </linearGradient>
+    <linearGradient id="card" x1="100" y1="100" x2="1180" y2="660" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.06"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="40" y="52" width="1200" height="656" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="26" stdDeviation="32" flood-color="#000814" flood-opacity="0.44"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2 2L10 6L2 10" fill="none" stroke="#9edbff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .title { font: 800 34px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f8fbff; }
+      .subtitle { font: 500 16px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #a9bdd8; }
+      .label { font: 800 18px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #eff6ff; }
+      .small { font: 600 13px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #cfe0f5; }
+      .tiny { font: 600 12px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #98acc7; }
+      .pill { font: 800 12px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #06101e; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="760" rx="36" fill="url(#bg)"/>
+  <rect width="1280" height="760" rx="36" fill="url(#grid)"/>
+  <path d="M88 630C221 512 356 560 493 456C623 358 714 322 871 390C1026 458 1082 338 1196 286" stroke="url(#accent)" stroke-opacity="0.18" stroke-width="2"/>
+  <path d="M116 206C257 254 378 194 505 258C655 334 778 194 916 236C1053 278 1117 210 1190 142" stroke="url(#accent)" stroke-opacity="0.14" stroke-width="2"/>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="70" width="1136" height="620" rx="30" fill="url(#card)" stroke="#ffffff" stroke-opacity="0.16"/>
+  </g>
+
+  <text x="112" y="126" class="title">WeSight Architecture</text>
+  <text x="112" y="156" class="subtitle">Desktop UI, local configuration, managed runtimes, and CLI-native agents behind one visual workspace.</text>
+
+  <rect x="1030" y="104" width="122" height="32" rx="16" fill="url(#accent)"/>
+  <text x="1053" y="125" class="pill">Electron App</text>
+
+  <rect x="112" y="212" width="230" height="286" rx="22" fill="#07111f" fill-opacity="0.58" stroke="#57d6ff" stroke-opacity="0.32"/>
+  <text x="142" y="252" class="label">Renderer</text>
+  <text x="142" y="280" class="tiny">React + Redux + Tailwind</text>
+  <rect x="138" y="314" width="178" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="158" y="336" class="small">Cowork Chat UI</text>
+  <rect x="138" y="360" width="178" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="158" y="382" class="small">Engine Selector</text>
+  <rect x="138" y="406" width="178" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="158" y="428" class="small">Model Settings</text>
+  <rect x="138" y="452" width="178" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="158" y="474" class="small">Skills / Tasks / Pet</text>
+
+  <rect x="386" y="244" width="162" height="222" rx="22" fill="#0b1728" fill-opacity="0.72" stroke="#ffffff" stroke-opacity="0.16"/>
+  <text x="424" y="284" class="label">Preload</text>
+  <text x="423" y="312" class="tiny">contextBridge</text>
+  <rect x="416" y="346" width="104" height="34" rx="17" fill="#57d6ff" fill-opacity="0.18" stroke="#57d6ff" stroke-opacity="0.42"/>
+  <text x="443" y="368" class="small">IPC</text>
+  <text x="418" y="410" class="tiny">Typed boundary</text>
+  <text x="418" y="432" class="tiny">No Node access</text>
+
+  <rect x="592" y="184" width="276" height="344" rx="24" fill="#07111f" fill-opacity="0.58" stroke="#8ef2c6" stroke-opacity="0.32"/>
+  <text x="626" y="224" class="label">Main Process</text>
+  <text x="626" y="252" class="tiny">Privileged desktop runtime</text>
+  <rect x="622" y="286" width="216" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="643" y="308" class="small">Cowork Store + SQLite</text>
+  <rect x="622" y="332" width="216" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="643" y="354" class="small">Skill Manager</text>
+  <rect x="622" y="378" width="216" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="643" y="400" class="small">Runtime Managers</text>
+  <rect x="622" y="424" width="216" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="643" y="446" class="small">Permission Events</text>
+  <rect x="652" y="482" width="156" height="34" rx="17" fill="#8ef2c6" fill-opacity="0.95"/>
+  <text x="675" y="504" class="pill">Engine Router</text>
+
+  <rect x="916" y="160" width="252" height="390" rx="24" fill="#07111f" fill-opacity="0.58" stroke="#ffd166" stroke-opacity="0.34"/>
+  <text x="950" y="200" class="label">Agent Engines</text>
+  <text x="950" y="228" class="tiny">One stream contract</text>
+  <rect x="948" y="262" width="188" height="34" rx="12" fill="#57d6ff" fill-opacity="0.15" stroke="#57d6ff" stroke-opacity="0.36"/>
+  <text x="980" y="284" class="small">Claude Code CLI</text>
+  <rect x="948" y="308" width="188" height="34" rx="12" fill="#8ef2c6" fill-opacity="0.14" stroke="#8ef2c6" stroke-opacity="0.36"/>
+  <text x="1010" y="330" class="small">Codex CLI</text>
+  <rect x="948" y="354" width="188" height="34" rx="12" fill="#ffd166" fill-opacity="0.14" stroke="#ffd166" stroke-opacity="0.36"/>
+  <text x="995" y="376" class="small">OpenClaw</text>
+  <rect x="948" y="400" width="188" height="34" rx="12" fill="#c7b7ff" fill-opacity="0.14" stroke="#c7b7ff" stroke-opacity="0.36"/>
+  <text x="985" y="422" class="small">Hermes Agent</text>
+  <rect x="948" y="446" width="188" height="34" rx="12" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.11"/>
+  <text x="978" y="468" class="small">Claude Agent SDK</text>
+  <text x="950" y="514" class="tiny">Streams: message, tool call, command result, error</text>
+
+  <path d="M342 355H386" stroke="#9edbff" stroke-opacity="0.9" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M548 355H592" stroke="#9edbff" stroke-opacity="0.9" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M808 499C856 499 862 356 916 356" stroke="#9edbff" stroke-opacity="0.9" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M916 508C796 608 474 610 230 508" stroke="#8ef2c6" stroke-opacity="0.72" stroke-width="2" stroke-dasharray="7 8" marker-end="url(#arrow)"/>
+  <text x="505" y="635" class="tiny">stream updates and permission decisions return to the visual chat</text>
+
+  <rect x="112" y="562" width="236" height="66" rx="18" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.12"/>
+  <text x="138" y="590" class="small">Unified Model Settings</text>
+  <text x="138" y="612" class="tiny">providers, models, local CLI mode</text>
+
+  <rect x="386" y="562" width="236" height="66" rx="18" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.12"/>
+  <text x="412" y="590" class="small">Local Data</text>
+  <text x="412" y="612" class="tiny">SQLite, sessions, memory, config</text>
+
+  <rect x="660" y="562" width="236" height="66" rx="18" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.12"/>
+  <text x="686" y="590" class="small">Managed Runtimes</text>
+  <text x="686" y="612" class="tiny">vendor builds and pinned versions</text>
+
+  <rect x="934" y="562" width="236" height="66" rx="18" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.12"/>
+  <text x="960" y="590" class="small">User Environment</text>
+  <text x="960" y="612" class="tiny">npm, CLI accounts, system config</text>
+
+  <path d="M230 562V498" stroke="#ffffff" stroke-opacity="0.2" stroke-width="2"/>
+  <path d="M504 562V528" stroke="#ffffff" stroke-opacity="0.2" stroke-width="2"/>
+  <path d="M778 562V528" stroke="#ffffff" stroke-opacity="0.2" stroke-width="2"/>
+  <path d="M1052 562V550" stroke="#ffffff" stroke-opacity="0.2" stroke-width="2"/>
+</svg>
