@@ -37,6 +37,7 @@ export interface HermesIMSessionSyncResult {
   changed: boolean;
   importedSessions: number;
   importedMessages: number;
+  latestUpdatedAt: number;
   skippedReason?: string;
 }
 
@@ -94,6 +95,11 @@ const timestampToMs = (value: unknown, fallback: number): number => {
     }
   }
   return fallback;
+};
+
+const stableFallbackTimestamp = (seed: string): number => {
+  const digest = crypto.createHash('sha1').update(seed).digest('hex').slice(0, 10);
+  return 1_700_000_000_000 + (Number.parseInt(digest, 16) % 100_000_000_000);
 };
 
 const importedCoworkSessionId = (hermesSessionId: string): string => (
@@ -183,6 +189,7 @@ const normalizeMessageType = (role: string | null): CoworkMessageType | null => 
 const readHermesMessages = (
   db: Database.Database,
   hermesSessionId: string,
+  fallbackTimestamp: number,
 ): CoworkImportedMessageInput[] => {
   const rows = db
     .prepare(
@@ -196,7 +203,7 @@ const readHermesMessages = (
     .all(hermesSessionId) as HermesStateMessageRow[];
 
   const messages: CoworkImportedMessageInput[] = [];
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const type = normalizeMessageType(row.role);
     if (!type) continue;
     if (row.role === 'session_meta') continue;
@@ -207,7 +214,7 @@ const readHermesMessages = (
       id: importedCoworkMessageId(hermesSessionId, row.id),
       type,
       content,
-      timestamp: timestampToMs(row.timestamp, Date.now()),
+      timestamp: timestampToMs(row.timestamp, fallbackTimestamp + index),
       metadata: {
         isStreaming: false,
         isFinal: true,
@@ -251,6 +258,7 @@ export const syncHermesIMSessions = (deps: HermesIMSessionSyncDeps): HermesIMSes
       changed: false,
       importedSessions: 0,
       importedMessages: 0,
+      latestUpdatedAt: 0,
       skippedReason: 'Hermes state database does not exist.',
     };
   }
@@ -274,15 +282,21 @@ export const syncHermesIMSessions = (deps: HermesIMSessionSyncDeps): HermesIMSes
     let changed = false;
     let importedSessions = 0;
     let importedMessages = 0;
+    let latestUpdatedAt = 0;
 
     for (const session of sessions) {
       const entry = sessionFileEntries.get(session.id);
-      const messages = readHermesMessages(db, session.id);
+      const sessionFallbackTimestamp = timestampToMs(
+        session.started_at,
+        timestampToMs(session.ended_at, stableFallbackTimestamp(session.id)),
+      );
+      const messages = readHermesMessages(db, session.id, sessionFallbackTimestamp);
       if (messages.length === 0) continue;
 
       const createdAt = timestampToMs(session.started_at, messages[0]?.timestamp || Date.now());
       const messageUpdatedAt = messages.reduce((max, message) => Math.max(max, message.timestamp), createdAt);
       const updatedAt = Math.max(timestampToMs(session.ended_at, messageUpdatedAt), messageUpdatedAt);
+      latestUpdatedAt = Math.max(latestUpdatedAt, updatedAt);
       const coworkSessionId = importedCoworkSessionId(session.id);
       const conversationId = resolveConversationId(session, entry);
       const agentId = deps.agentId || 'main';
@@ -308,7 +322,7 @@ export const syncHermesIMSessions = (deps: HermesIMSessionSyncDeps): HermesIMSes
       importedMessages += messages.length;
     }
 
-    return { changed, importedSessions, importedMessages };
+    return { changed, importedSessions, importedMessages, latestUpdatedAt };
   } finally {
     db.close();
   }

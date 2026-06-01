@@ -13,15 +13,21 @@
  *   - Files older than 7 days are pruned on startup
  */
 
-import path from 'path';
-import fs from 'fs';
 import log from 'electron-log/main';
+import fs from 'fs';
+import path from 'path';
 
 const LOG_RETENTION_DAYS = 7;
 const LOG_MAX_SIZE = 80 * 1024 * 1024; // 80 MB
+type ConsoleWriter = (...args: unknown[]) => void;
 
 /** Captured on first resolvePathFn call; used for pruning and export. */
 let _logDir: string | undefined;
+let loggerInitialized = false;
+
+function isBrokenPipeError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'EPIPE';
+}
 
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -36,6 +42,9 @@ function logDir(): string {
  * Must be called early in main process, before any console output.
  */
 export function initLogger(): void {
+  if (loggerInitialized) return;
+  loggerInitialized = true;
+
   // Daily rotation: one file per calendar day
   log.transports.file.resolvePathFn = (vars) => {
     _logDir = vars.libraryDefaultDir;
@@ -47,9 +56,8 @@ export function initLogger(): void {
   log.transports.file.maxSize = LOG_MAX_SIZE;
   log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] {text}';
 
-  // Console transport config
-  log.transports.console.level = 'debug';
-  log.transports.console.format = '{text}';
+  // electron-log writes to file only; native console mirroring is handled below.
+  log.transports.console.level = false;
 
   // Intercept console.* methods so all existing console.log/error/warn
   // across 25+ files are automatically captured without any code changes.
@@ -60,31 +68,55 @@ export function initLogger(): void {
   const originalWarn = console.warn;
   const originalInfo = console.info;
   const originalDebug = console.debug;
+  let consoleMirrorEnabled = true;
 
-  console.log = (...args: any[]) => {
-    originalLog.apply(console, args);
+  const handleConsoleStreamError = (error: Error & { code?: string }) => {
+    if (isBrokenPipeError(error)) {
+      consoleMirrorEnabled = false;
+      log.warn('[Logger] terminal output pipe closed; file logging remains active');
+      return;
+    }
+    consoleMirrorEnabled = false;
+    log.warn('[Logger] terminal output failed; file logging remains active:', error);
+  };
+
+  process.stdout.on('error', handleConsoleStreamError);
+  process.stderr.on('error', handleConsoleStreamError);
+
+  const writeOriginalConsole = (writer: ConsoleWriter, args: unknown[]) => {
+    if (!consoleMirrorEnabled) return;
+    try {
+      writer.apply(console, args);
+    } catch (error) {
+      consoleMirrorEnabled = false;
+      if (isBrokenPipeError(error)) {
+        log.warn('[Logger] terminal output pipe closed; file logging remains active');
+        return;
+      }
+      log.warn('[Logger] terminal output failed; file logging remains active:', error);
+    }
+  };
+
+  console.log = (...args: unknown[]) => {
+    writeOriginalConsole(originalLog, args);
     log.info(...args);
   };
-  console.error = (...args: any[]) => {
-    originalError.apply(console, args);
+  console.error = (...args: unknown[]) => {
+    writeOriginalConsole(originalError, args);
     log.error(...args);
   };
-  console.warn = (...args: any[]) => {
-    originalWarn.apply(console, args);
+  console.warn = (...args: unknown[]) => {
+    writeOriginalConsole(originalWarn, args);
     log.warn(...args);
   };
-  console.info = (...args: any[]) => {
-    originalInfo.apply(console, args);
+  console.info = (...args: unknown[]) => {
+    writeOriginalConsole(originalInfo, args);
     log.info(...args);
   };
-  console.debug = (...args: any[]) => {
-    originalDebug.apply(console, args);
+  console.debug = (...args: unknown[]) => {
+    writeOriginalConsole(originalDebug, args);
     log.debug(...args);
   };
-
-  // Disable electron-log's own console transport to avoid double printing
-  // (we already call originalLog above, so electron-log only needs to write to file)
-  log.transports.console.level = false;
 
   // Remove log files older than retention window
   pruneOldLogs();

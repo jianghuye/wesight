@@ -5,6 +5,7 @@ import {
   buildHermesDotenv,
   buildHermesEnvForWesightModel,
   DEFAULT_HERMES_MODEL,
+  buildHermesRuntimeEnvForLocalCli,
   HERMES_WESIGHT_FEISHU_ENV_BLOCK,
   listHermesModelProviders,
   mergeHermesManagedDotenvBlock,
@@ -117,6 +118,61 @@ describe('hermesConfig', () => {
       HERMES_INFERENCE_PROVIDER: 'anthropic',
       HERMES_INFERENCE_API_KEY: 'sk-ant',
       ANTHROPIC_API_KEY: 'sk-ant',
+    });
+  });
+
+  test('maps BigModel Anthropic-compatible endpoint to Z.AI provider', () => {
+    const config = {
+      apiKey: 'sk-glm',
+      baseURL: 'https://open.bigmodel.cn/api/anthropic',
+      model: 'glm-5.1-highspeed',
+      apiType: 'anthropic' as const,
+    };
+    const merged = mergeHermesConfigForWesightModel({}, config);
+    const env = buildHermesEnvForWesightModel(config);
+
+    expect(merged.model).toMatchObject({
+      provider: 'zai',
+      default: 'glm-5.1-highspeed',
+      base_url: 'https://open.bigmodel.cn/api/anthropic',
+      api_mode: 'anthropic_messages',
+    });
+    expect(env).toMatchObject({
+      HERMES_INFERENCE_PROVIDER: 'zai',
+      HERMES_INFERENCE_MODEL: 'glm-5.1-highspeed',
+      HERMES_INFERENCE_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
+      GLM_API_KEY: 'sk-glm',
+      ZAI_API_KEY: 'sk-glm',
+      Z_AI_API_KEY: 'sk-glm',
+      GLM_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
+    });
+    expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
+  });
+
+  test('normalizes local Hermes BigModel Anthropic config at runtime', () => {
+    const env = buildHermesRuntimeEnvForLocalCli(
+      {
+        model: {
+          provider: 'anthropic',
+          default: 'glm-5.1-highspeed',
+          base_url: 'https://open.bigmodel.cn/api/anthropic',
+        },
+      },
+      {
+        HERMES_INFERENCE_API_KEY: 'sk-glm',
+        ANTHROPIC_API_KEY: 'sk-glm',
+      },
+    );
+
+    expect(env).toMatchObject({
+      HERMES_INFERENCE_PROVIDER: 'zai',
+      HERMES_INFERENCE_MODEL: 'glm-5.1-highspeed',
+      HERMES_INFERENCE_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
+      HERMES_INFERENCE_API_KEY: 'sk-glm',
+      GLM_API_KEY: 'sk-glm',
+      ZAI_API_KEY: 'sk-glm',
+      Z_AI_API_KEY: 'sk-glm',
+      GLM_BASE_URL: 'https://open.bigmodel.cn/api/anthropic',
     });
   });
 

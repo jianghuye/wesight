@@ -1,4 +1,5 @@
 export const PetVariant = {
+  WeSightAgent: 'wesight_agent',
   BlueBot: 'blue_bot',
   AquaDrop: 'aqua_drop',
   FlameBuddy: 'flame_buddy',
@@ -24,10 +25,47 @@ export const DesktopPetIpcChannel = {
   GetBounds: 'desktopPet:getBounds',
   SetPosition: 'desktopPet:setPosition',
   OpenMainWindow: 'desktopPet:openMainWindow',
+  GetTaskSnapshot: 'desktopPet:getTaskSnapshot',
+  OpenTask: 'desktopPet:openTask',
   ConfigChanged: 'desktopPet:configChanged',
+  TaskChanged: 'desktopPet:taskChanged',
+  OpenTaskRequested: 'desktopPet:openTaskRequested',
 } as const;
 
 export type DesktopPetIpcChannel = typeof DesktopPetIpcChannel[keyof typeof DesktopPetIpcChannel];
+
+export const DesktopPetTaskStatus = {
+  Waiting: 'waiting',
+  Thinking: 'thinking',
+  Replying: 'replying',
+  Coding: 'coding',
+  Permission: 'permission',
+  Completed: 'completed',
+  Error: 'error',
+  Stopped: 'stopped',
+} as const;
+
+export type DesktopPetTaskStatus = typeof DesktopPetTaskStatus[keyof typeof DesktopPetTaskStatus];
+
+export const DesktopPetTaskSource = {
+  Chat: 'chat',
+  Im: 'im',
+  Scheduled: 'scheduled',
+} as const;
+
+export type DesktopPetTaskSource = typeof DesktopPetTaskSource[keyof typeof DesktopPetTaskSource];
+
+export interface DesktopPetTaskSnapshot {
+  sessionId: string;
+  title: string;
+  projectName: string;
+  source: DesktopPetTaskSource;
+  status: DesktopPetTaskStatus;
+  engineLabel: string;
+  modelLabel: string;
+  activityText: string;
+  updatedAt: number;
+}
 
 export interface PetPosition {
   x: number;
@@ -43,7 +81,7 @@ export interface PetConfig {
 
 export const DEFAULT_PET_CONFIG: PetConfig = {
   enabled: false,
-  variant: PetVariant.BlueBot,
+  variant: PetVariant.WeSightAgent,
   motion: PetMotion.Calm,
   position: null,
 };

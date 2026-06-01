@@ -21,6 +21,9 @@ import ModelSelector from '../ModelSelector';
 
 interface CoworkModelSelectorProps {
   dropdownDirection?: 'up' | 'down';
+  readOnly?: boolean;
+  labelOverride?: string;
+  titleOverride?: string;
 }
 
 const resolveLocalCliAppType = (config: RootState['cowork']['config']): ExternalAgentProviderAppType | null => {
@@ -54,6 +57,9 @@ const resolveLocalCliAppType = (config: RootState['cowork']['config']): External
   ) {
     return 'opencode';
   }
+  if (config.agentEngine === CoworkAgentEngine.GrokBuild) {
+    return 'grok';
+  }
   if (
     config.agentEngine === CoworkAgentEngine.QwenCode
     && config.qwenCodeConfigSource === ExternalAgentConfigSource.LocalCli
@@ -78,6 +84,9 @@ const getProviderModelLabel = (provider: ExternalAgentProvider | null): string =
 
 const CoworkModelSelector: React.FC<CoworkModelSelectorProps> = ({
   dropdownDirection = 'down',
+  readOnly = false,
+  labelOverride,
+  titleOverride,
 }) => {
   const config = useSelector((state: RootState) => state.cowork.config);
   const appType = resolveLocalCliAppType(config);
@@ -88,7 +97,7 @@ const CoworkModelSelector: React.FC<CoworkModelSelectorProps> = ({
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   const loadProviders = React.useCallback(async () => {
-    if (!appType) return;
+    if (!appType || readOnly) return;
     setIsLoading(true);
     try {
       const result = await coworkService.listAgentProviders(appType);
@@ -98,7 +107,7 @@ const CoworkModelSelector: React.FC<CoworkModelSelectorProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [appType]);
+  }, [appType, readOnly]);
 
   React.useEffect(() => {
     void loadProviders();
@@ -138,6 +147,28 @@ const CoworkModelSelector: React.FC<CoworkModelSelectorProps> = ({
       window.removeEventListener('cowork:open-model-selector', handleOpenModelSelector);
     };
   }, [appType]);
+
+  if (readOnly) {
+    return (
+      <div
+        className="max-w-[260px] truncate rounded-xl bg-surface px-3 py-1.5 text-sm font-medium text-foreground"
+        title={titleOverride || labelOverride || i18nService.t('coworkRuntimeLocked')}
+      >
+        {labelOverride || i18nService.t('coworkAgentLocalModelUnknown')}
+      </div>
+    );
+  }
+
+  if (config.agentEngine === CoworkAgentEngine.CodexApp) {
+    return (
+      <div
+        className="max-w-[260px] truncate rounded-xl bg-surface px-3 py-1.5 text-sm font-medium text-foreground"
+        title={i18nService.t('coworkAgentCodexAppModelSourceValue')}
+      >
+        {i18nService.t('coworkAgentCodexAppModelSourceValue')}
+      </div>
+    );
+  }
 
   if (!appType) {
     return <ModelSelector dropdownDirection={dropdownDirection} />;

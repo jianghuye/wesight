@@ -3,7 +3,7 @@ import { app } from 'electron';
 import { chmodSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { delimiter, dirname, join } from 'path';
 
-import { buildEnvForConfig, getCurrentApiConfig, resolveCurrentApiConfig, resolveRawApiConfig } from './claudeSettings';
+import { type ApiConfigOverride,buildEnvForConfig, getCurrentApiConfig, resolveCurrentApiConfig, resolveRawApiConfig } from './claudeSettings';
 import { coworkLog } from './coworkLogger';
 import {
   buildAnthropicMessagesUrl,
@@ -1312,6 +1312,7 @@ export function getSkillsRoot(): string {
  */
 type EnhancedEnvOptions = {
   injectCoworkModelConfig?: boolean;
+  apiConfigOverride?: ApiConfigOverride;
 };
 
 const COWORK_MODEL_ENV_KEYS = [
@@ -1340,7 +1341,7 @@ export async function getEnhancedEnv(
   options: EnhancedEnvOptions = {},
 ): Promise<Record<string, string | undefined>> {
   const shouldInjectCoworkModelConfig = options.injectCoworkModelConfig !== false;
-  const config = shouldInjectCoworkModelConfig ? getCurrentApiConfig(target) : null;
+  const config = shouldInjectCoworkModelConfig ? getCurrentApiConfig(target, options.apiConfigOverride) : null;
   const env = config
     ? buildEnvForConfig(config)
     : { ...process.env };

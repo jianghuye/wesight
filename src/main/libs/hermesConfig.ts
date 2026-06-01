@@ -8,6 +8,7 @@ export interface HermesConfig {
     provider?: string;
     default?: string;
     base_url?: string;
+    api_mode?: string;
     [key: string]: unknown;
   };
   terminal?: Record<string, unknown>;
@@ -35,6 +36,12 @@ export const DEFAULT_HERMES_MODEL = 'default-model';
 export const HERMES_WESIGHT_MODEL_ENV_BLOCK = 'wesight-model';
 export const HERMES_WESIGHT_FEISHU_ENV_BLOCK = 'wesight-feishu';
 
+const HermesProvider = {
+  Anthropic: 'anthropic',
+  Custom: 'custom',
+  Zai: 'zai',
+} as const;
+
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 };
@@ -55,6 +62,8 @@ const providerDisplayName = (value: string | undefined): string => {
     openai: 'OpenAI',
     qwen: 'Qwen',
     wesight: 'WeSight',
+    zai: 'Z.AI / GLM',
+    'z-ai': 'Z.AI / GLM',
   };
   return known[normalized.toLowerCase()]
     ?? normalized
@@ -62,9 +71,36 @@ const providerDisplayName = (value: string | undefined): string => {
       .replace(/\b\w/g, (letter) => letter.toUpperCase());
 };
 
+const getUrlHost = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    return new URL(trimmed).hostname.toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+};
+
+const isZaiBaseUrl = (baseUrl: string): boolean => {
+  const host = getUrlHost(baseUrl);
+  return host === 'open.bigmodel.cn'
+    || host.endsWith('.bigmodel.cn')
+    || host === 'api.z.ai'
+    || host.endsWith('.z.ai');
+};
+
 const providerKeyForConfig = (config: CoworkApiConfig, _providerName?: string): string => {
-  if (config.apiType === 'anthropic') return 'anthropic';
-  return DEFAULT_HERMES_PROVIDER;
+  if (isZaiBaseUrl(config.baseURL)) return HermesProvider.Zai;
+  if (config.apiType === 'anthropic') return HermesProvider.Anthropic;
+  return HermesProvider.Custom;
+};
+
+const apiModeForConfig = (config: CoworkApiConfig, provider: string, baseUrl: string): string | undefined => {
+  if (config.apiType === 'anthropic') return 'anthropic_messages';
+  if (provider === HermesProvider.Zai && baseUrl.toLowerCase().replace(/\/+$/, '').endsWith('/anthropic')) {
+    return 'anthropic_messages';
+  }
+  return undefined;
 };
 
 const parseModel = (config: HermesConfig): { provider: string; model: string; baseUrl: string } => {
@@ -233,8 +269,8 @@ export const buildHermesEnvForWesightModel = (
     };
   }
 
-  const provider = config.apiType === 'anthropic' ? 'anthropic' : 'custom';
   const baseUrl = config.baseURL.trim().replace(/\/+$/, '');
+  const provider = providerKeyForConfig(config);
   const common = {
     HERMES_SKIP_SETUP: '1',
     HERMES_NO_SETUP: '1',
@@ -245,7 +281,17 @@ export const buildHermesEnvForWesightModel = (
     HERMES_MODEL: config.model,
   };
 
-  if (config.apiType === 'anthropic') {
+  if (provider === HermesProvider.Zai) {
+    return {
+      ...common,
+      GLM_API_KEY: config.apiKey,
+      ZAI_API_KEY: config.apiKey,
+      Z_AI_API_KEY: config.apiKey,
+      GLM_BASE_URL: baseUrl,
+    };
+  }
+
+  if (provider === HermesProvider.Anthropic) {
     return {
       ...common,
       ANTHROPIC_API_KEY: config.apiKey,
@@ -261,6 +307,44 @@ export const buildHermesEnvForWesightModel = (
   };
 };
 
+export const buildHermesRuntimeEnvForLocalCli = (
+  config: HermesConfig,
+  env: Record<string, string>,
+): Record<string, string> => {
+  const current = parseModel(config);
+  if (!isZaiBaseUrl(current.baseUrl)) {
+    return env;
+  }
+
+  const provider = current.provider.trim().toLowerCase();
+  if (provider !== HermesProvider.Anthropic && provider !== HermesProvider.Zai) {
+    return env;
+  }
+
+  const apiKey = env.GLM_API_KEY
+    || env.ZAI_API_KEY
+    || env.Z_AI_API_KEY
+    || env.HERMES_INFERENCE_API_KEY
+    || env.ANTHROPIC_AUTH_TOKEN
+    || env.ANTHROPIC_API_KEY
+    || '';
+  if (!apiKey) {
+    return env;
+  }
+
+  return {
+    ...env,
+    HERMES_INFERENCE_PROVIDER: HermesProvider.Zai,
+    HERMES_INFERENCE_MODEL: current.model,
+    HERMES_INFERENCE_BASE_URL: current.baseUrl,
+    HERMES_INFERENCE_API_KEY: apiKey,
+    GLM_API_KEY: apiKey,
+    ZAI_API_KEY: apiKey,
+    Z_AI_API_KEY: apiKey,
+    GLM_BASE_URL: current.baseUrl,
+  };
+};
+
 export const mergeHermesConfigForWesightModel = (
   existingConfig: HermesConfig,
   config: CoworkApiConfig,
@@ -272,15 +356,26 @@ export const mergeHermesConfigForWesightModel = (
   const provider = providerKeyForConfig(config, options.providerName);
   const model = config.model.trim() || DEFAULT_HERMES_MODEL;
   const baseUrl = config.baseURL.trim().replace(/\/+$/, '');
+  const apiMode = apiModeForConfig(config, provider, baseUrl);
+  const modelConfig: Record<string, unknown> = {
+    ...(isRecord(existingConfig.model) ? existingConfig.model : {}),
+    provider,
+    default: model,
+  };
+  if (baseUrl) {
+    modelConfig.base_url = baseUrl;
+  } else {
+    delete modelConfig.base_url;
+  }
+  if (apiMode) {
+    modelConfig.api_mode = apiMode;
+  } else {
+    delete modelConfig.api_mode;
+  }
 
   return {
     ...existingConfig,
-    model: {
-      ...(isRecord(existingConfig.model) ? existingConfig.model : {}),
-      provider,
-      default: model,
-      ...(baseUrl ? { base_url: baseUrl } : {}),
-    },
+    model: modelConfig,
     terminal: {
       ...(isRecord(existingConfig.terminal) ? existingConfig.terminal : {}),
       backend: 'local',
@@ -313,11 +408,15 @@ export const listHermesModelProviders = (
   const apiKey = env.HERMES_INFERENCE_API_KEY
     || env.ANTHROPIC_AUTH_TOKEN
     || env.ANTHROPIC_API_KEY
+    || env.GLM_API_KEY
+    || env.ZAI_API_KEY
+    || env.Z_AI_API_KEY
     || env.OPENAI_API_KEY
     || '';
   const baseUrl = current.baseUrl
     || env.HERMES_INFERENCE_BASE_URL
     || env.ANTHROPIC_BASE_URL
+    || env.GLM_BASE_URL
     || env.OPENAI_BASE_URL
     || '';
   return [

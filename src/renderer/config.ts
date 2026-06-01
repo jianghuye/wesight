@@ -1,5 +1,5 @@
 import { DEFAULT_PET_CONFIG, type PetConfig } from '@shared/pet/constants';
-import { ProviderRegistry } from '@shared/providers';
+import { ProviderName, ProviderRegistry } from '@shared/providers';
 
 // 配置类型定义
 export interface AppConfig {
@@ -339,10 +339,21 @@ export const CONFIG_KEYS = {
 // Provider lists derived from ProviderRegistry — single source of truth
 export const CHINA_PROVIDERS = [...ProviderRegistry.idsByRegion('china')] as const;
 export const GLOBAL_PROVIDERS = ProviderRegistry.idsByRegion('global');
+export const OFFICIAL_GLOBAL_PROVIDERS = [
+  ProviderName.OpenAI,
+  ProviderName.Anthropic,
+  ProviderName.Gemini,
+] as const;
+
+const BUILTIN_PROVIDER_DISPLAY_NAMES: Partial<Record<string, string>> = {
+  [ProviderName.OpenAI]: 'OpenAI',
+  [ProviderName.Anthropic]: 'Claude',
+  [ProviderName.Gemini]: 'Google',
+};
 
 export const getVisibleProviders = (language: 'zh' | 'en'): readonly string[] => {
   if (language === 'zh') {
-    return [...CHINA_PROVIDERS];
+    return [...OFFICIAL_GLOBAL_PROVIDERS, ...CHINA_PROVIDERS];
   }
   return ProviderRegistry.idsForEnLocale();
 };
@@ -373,6 +384,10 @@ export const getProviderDisplayName = (
       ? providerConfig.displayName
       : '';
     return name || getCustomProviderDefaultName(providerKey);
+  }
+  const builtinName = BUILTIN_PROVIDER_DISPLAY_NAMES[providerKey];
+  if (builtinName) {
+    return builtinName;
   }
   return providerKey.charAt(0).toUpperCase() + providerKey.slice(1);
 };

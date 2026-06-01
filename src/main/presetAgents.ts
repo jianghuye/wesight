@@ -1,3 +1,4 @@
+import { CoworkAgentEngine, DefaultCoworkAgentEngine } from '../shared/cowork/constants';
 import type { CreateAgentRequest } from './coworkStore';
 import { getLanguage } from './i18n';
 
@@ -11,6 +12,7 @@ export interface PresetAgent {
   systemPrompt: string;
   systemPromptEn: string;
   skillIds: string[];
+  agentEngine?: CoworkAgentEngine;
 }
 
 /**
@@ -345,6 +347,7 @@ export function presetToCreateRequest(preset: PresetAgent): CreateAgentRequest {
     systemPrompt: isEn && preset.systemPromptEn ? preset.systemPromptEn : preset.systemPrompt,
     icon: preset.icon,
     skillIds: preset.skillIds,
+    agentEngine: preset.agentEngine || DefaultCoworkAgentEngine,
     source: 'preset',
     presetId: preset.id,
   };

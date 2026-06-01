@@ -5,12 +5,17 @@ import {
   CoworkAgentEngine,
   ExternalAgentConfigSource,
 } from '../../shared/cowork/constants';
+import {
+  FeishuRuntimeOwnership,
+  type FeishuRuntimeOwnershipType,
+} from '../../shared/im/constants';
 import type { CoworkConfig } from '../coworkStore';
 import type { FeishuInstanceConfig } from '../im/types';
 import { resolveRawApiConfig } from './claudeSettings';
 import {
   buildHermesEnvForWesightModel,
   buildHermesFeishuEnvForInstances,
+  buildHermesRuntimeEnvForLocalCli,
   HERMES_WESIGHT_FEISHU_ENV_BLOCK,
   HERMES_WESIGHT_MODEL_ENV_BLOCK,
   mergeHermesConfigForWesightModel,
@@ -32,6 +37,7 @@ type HermesConfigSyncDeps = {
   engineManager: HermesEngineManager;
   getCoworkConfig: () => CoworkConfig;
   getFeishuInstances?: () => FeishuInstanceConfig[];
+  getFeishuRuntimeOwnership?: () => FeishuRuntimeOwnershipType;
 };
 
 const atomicWrite = (filePath: string, content: string, mode?: number): void => {
@@ -59,11 +65,13 @@ export class HermesConfigSync {
   private readonly engineManager: HermesEngineManager;
   private readonly getCoworkConfig: () => CoworkConfig;
   private readonly getFeishuInstances: () => FeishuInstanceConfig[];
+  private readonly getFeishuRuntimeOwnership: () => FeishuRuntimeOwnershipType;
 
   constructor(deps: HermesConfigSyncDeps) {
     this.engineManager = deps.engineManager;
     this.getCoworkConfig = deps.getCoworkConfig;
     this.getFeishuInstances = deps.getFeishuInstances ?? (() => []);
+    this.getFeishuRuntimeOwnership = deps.getFeishuRuntimeOwnership ?? (() => FeishuRuntimeOwnership.WesightManaged);
   }
 
   sync(_reason: string): HermesConfigSyncResult {
@@ -84,7 +92,8 @@ export class HermesConfigSync {
           feishuResult.env,
         );
         const envChanged = writeIfChanged(this.engineManager.getEnvPath(), nextEnvText, 0o600);
-        const env = parseHermesDotenvText(nextEnvText);
+        const existingConfig = parseHermesConfigText(readText(this.engineManager.getConfigPath()));
+        const env = buildHermesRuntimeEnvForLocalCli(existingConfig, parseHermesDotenvText(nextEnvText));
         this.engineManager.setSecretEnvVars(env);
         return {
           success: true,
@@ -143,6 +152,9 @@ export class HermesConfigSync {
   }
 
   private buildFeishuEnv(coworkConfig: CoworkConfig): { env: Record<string, string>; error?: string } {
+    if (this.getFeishuRuntimeOwnership() === FeishuRuntimeOwnership.LocalRuntime) {
+      return buildHermesFeishuEnvForInstances(this.getFeishuInstances());
+    }
     if (coworkConfig.agentEngine !== CoworkAgentEngine.Hermes) {
       return { env: {} };
     }

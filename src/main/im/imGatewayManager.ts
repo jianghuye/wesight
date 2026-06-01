@@ -15,6 +15,8 @@ import {
   FeishuImportSource,
   FeishuManagementMode,
   type FeishuManagementModeType,
+  FeishuRuntimeOwnership,
+  type FeishuRuntimeOwnershipType,
 } from '../../shared/im/constants';
 import type { CoworkStore } from '../coworkStore';
 import { t } from '../i18n';
@@ -23,7 +25,7 @@ import { getExternalAgentEnvironmentSnapshot } from '../libs/externalAgentEnviro
 import type { OpenClawLocalFeishuDetection } from '../libs/openclawSystemRuntime';
 import { fetchJsonWithTimeout } from './http';
 import { IMChatHandler } from './imChatHandler';
-import { IMCoworkHandler } from './imCoworkHandler';
+import { IMCoworkHandler, type IMCoworkHandlerOptions } from './imCoworkHandler';
 import {
   buildDingTalkSendParamsFromRoute,
   buildDingTalkSessionKeyCandidates,
@@ -40,6 +42,7 @@ import { IMStore } from './imStore';
 import { NativeFeishuGateway } from './nativeFeishuGateway';
 import { NimGateway } from './nimGateway';
 import {
+  FeishuRuntimeOwnershipStatus,
   IMConnectivityCheck,
   IMConnectivityTestResult,
   IMConnectivityVerdict,
@@ -94,6 +97,11 @@ export interface IMGatewayManagerOptions {
   isOpenClawEngine?: () => boolean;
   getFeishuAgentEngine?: () => FeishuAgentEngine | null;
   getFeishuManagementMode?: () => FeishuManagementModeType;
+  getFeishuRuntimeOwnership?: (engineKey: FeishuEngineKeyType) => FeishuRuntimeOwnershipType;
+  getFeishuRuntimeOwnershipStatus?: (
+    engineKey: FeishuEngineKeyType,
+    ownership: FeishuRuntimeOwnershipType,
+  ) => FeishuRuntimeOwnershipStatus;
   detectOpenClawLocalFeishu?: () => OpenClawLocalFeishuDetection;
   syncOpenClawConfig?: () => Promise<void>;
   syncHermesConfig?: () => Promise<void>;
@@ -108,6 +116,7 @@ export interface IMGatewayManagerOptions {
     message: IMMessage;
     request: ParsedIMScheduledTaskRequest;
   }) => Promise<IMScheduledTaskCreationResult>;
+  runTeamSession?: IMCoworkHandlerOptions['runTeamSession'];
 }
 
 export class IMGatewayManager extends EventEmitter {
@@ -122,6 +131,10 @@ export class IMGatewayManager extends EventEmitter {
   private isOpenClawEngine: (() => boolean) | null = null;
   private getFeishuAgentEngine: (() => FeishuAgentEngine | null) | null = null;
   private getFeishuManagementMode: (() => FeishuManagementModeType) | null = null;
+  private getFeishuRuntimeOwnership: ((engineKey: FeishuEngineKeyType) => FeishuRuntimeOwnershipType) | null = null;
+  private getFeishuRuntimeOwnershipStatus:
+    | ((engineKey: FeishuEngineKeyType, ownership: FeishuRuntimeOwnershipType) => FeishuRuntimeOwnershipStatus)
+    | null = null;
   private detectOpenClawLocalFeishu: (() => OpenClawLocalFeishuDetection) | null = null;
   private syncOpenClawConfig: (() => Promise<void>) | null = null;
   private syncHermesConfig: (() => Promise<void>) | null = null;
@@ -138,6 +151,7 @@ export class IMGatewayManager extends EventEmitter {
         request: ParsedIMScheduledTaskRequest;
       }) => Promise<IMScheduledTaskCreationResult>)
     | null = null;
+  private runTeamSession: IMCoworkHandlerOptions['runTeamSession'] | null = null;
 
   // Cowork dependencies
   private coworkRuntime: CoworkRuntime | null = null;
@@ -164,6 +178,8 @@ export class IMGatewayManager extends EventEmitter {
     this.isOpenClawEngine = options?.isOpenClawEngine ?? null;
     this.getFeishuAgentEngine = options?.getFeishuAgentEngine ?? null;
     this.getFeishuManagementMode = options?.getFeishuManagementMode ?? null;
+    this.getFeishuRuntimeOwnership = options?.getFeishuRuntimeOwnership ?? null;
+    this.getFeishuRuntimeOwnershipStatus = options?.getFeishuRuntimeOwnershipStatus ?? null;
     this.detectOpenClawLocalFeishu = options?.detectOpenClawLocalFeishu ?? null;
     this.syncOpenClawConfig = options?.syncOpenClawConfig ?? null;
     this.syncHermesConfig = options?.syncHermesConfig ?? null;
@@ -174,6 +190,7 @@ export class IMGatewayManager extends EventEmitter {
     this.ensureOpenClawGatewayReady = options?.ensureOpenClawGatewayReady ?? null;
     this.getOpenClawSessionKeysForCoworkSession = options?.getOpenClawSessionKeysForCoworkSession ?? null;
     this.createScheduledTask = options?.createScheduledTask ?? null;
+    this.runTeamSession = options?.runTeamSession ?? null;
 
     // Forward gateway events
     this.setupGatewayEventForwarding();
@@ -202,6 +219,18 @@ export class IMGatewayManager extends EventEmitter {
     return this.getFeishuManagementMode?.() ?? FeishuManagementMode.LocalOpenClaw;
   }
 
+  private resolveFeishuRuntimeOwnership(engineKey: FeishuEngineKeyType = this.resolveFeishuEngineKey()): FeishuRuntimeOwnershipType {
+    if (this.getFeishuRuntimeOwnership) {
+      return this.getFeishuRuntimeOwnership(engineKey);
+    }
+    if (engineKey === FeishuEngineKey.OpenClaw) {
+      return this.resolveFeishuManagementMode() === FeishuManagementMode.WesightManaged
+        ? FeishuRuntimeOwnership.WesightManaged
+        : FeishuRuntimeOwnership.LocalRuntime;
+    }
+    return FeishuRuntimeOwnership.WesightManaged;
+  }
+
   private resolveFeishuEngineKey(): FeishuEngineKeyType {
     const engine = this.getFeishuAgentEngine?.() ?? null;
     if (engine === CoworkAgentEngine.Hermes) return FeishuEngineKey.Hermes;
@@ -219,7 +248,7 @@ export class IMGatewayManager extends EventEmitter {
   }
 
   private isFeishuOwnedByLocalOpenClaw(): boolean {
-    if (this.resolveFeishuManagementMode() !== FeishuManagementMode.LocalOpenClaw) return false;
+    if (this.resolveFeishuRuntimeOwnership(FeishuEngineKey.OpenClaw) !== FeishuRuntimeOwnership.LocalRuntime) return false;
     const detection = this.getOpenClawLocalFeishuDetection();
     return Boolean(detection?.configured || detection?.enabled);
   }
@@ -411,6 +440,7 @@ export class IMGatewayManager extends EventEmitter {
         getSkillsPrompt: this.getSkillsPrompt || undefined,
         detectScheduledTaskRequest,
         createScheduledTask: this.createScheduledTask || undefined,
+        runTeamSession: this.runTeamSession || undefined,
         sendAsyncReply: async (platform, conversationId, text) => {
           return this.sendConversationReply(platform, conversationId, text);
         },
@@ -518,6 +548,23 @@ export class IMGatewayManager extends EventEmitter {
     const activeFeishuEngineKey = this.resolveFeishuEngineKey();
     const openClawLocalFeishu = this.getOpenClawLocalFeishuDetection();
     const feishuManagementMode = this.resolveFeishuManagementMode();
+    const runtimeOwnership = Object.fromEntries(
+      Object.values(FeishuEngineKey).map((engineKey) => {
+        const ownership = this.resolveFeishuRuntimeOwnership(engineKey);
+        const status = this.getFeishuRuntimeOwnershipStatus?.(engineKey, ownership) ?? {
+          engineKey,
+          ownership,
+          launchAgentInstalled: false,
+          launchAgentLoaded: false,
+          launchAgentLabel: null,
+          plistPath: null,
+          scriptPath: null,
+          configPath: null,
+          message: null,
+        };
+        return [engineKey, status];
+      }),
+    ) as Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipStatus>>;
     const importedFromOpenClaw = feishuInstances.some((inst) => inst.importSource === FeishuImportSource.OpenClawLocal);
     const feishuStatus = {
       activeEngineKey: activeFeishuEngineKey,
@@ -547,6 +594,7 @@ export class IMGatewayManager extends EventEmitter {
         }),
       ),
       conflicts: config.feishu?.conflicts ?? [],
+      runtimeOwnership,
       openClawLocal: {
         managementMode: feishuManagementMode,
         configured: Boolean(openClawLocalFeishu?.configured),
@@ -891,6 +939,11 @@ export class IMGatewayManager extends EventEmitter {
       }
       if (engine === CoworkAgentEngine.Hermes) {
         this.assertNativeFeishuAllowed();
+        if (this.resolveFeishuRuntimeOwnership(FeishuEngineKey.Hermes) === FeishuRuntimeOwnership.LocalRuntime) {
+          console.log('[IMGatewayManager] Feishu follows local Hermes Agent runtime');
+          await this.nativeFeishuGateway.stopAll();
+          return;
+        }
         console.log('[IMGatewayManager] Feishu follows Hermes Agent, syncing config and starting gateway');
         await this.nativeFeishuGateway.stopAll();
         await this.syncHermesConfig?.();
@@ -979,6 +1032,9 @@ export class IMGatewayManager extends EventEmitter {
       if (engine === CoworkAgentEngine.Hermes) {
         console.log('[IMGatewayManager] Feishu follows Hermes Agent, syncing disabled config');
         await this.nativeFeishuGateway.stopAll();
+        if (this.resolveFeishuRuntimeOwnership(FeishuEngineKey.Hermes) === FeishuRuntimeOwnership.LocalRuntime) {
+          return;
+        }
         await this.syncHermesConfig?.();
         await this.ensureHermesGatewayReady?.();
         return;
@@ -1069,6 +1125,9 @@ export class IMGatewayManager extends EventEmitter {
         console.log('[IMGatewayManager] Starting Feishu through Hermes Agent');
         try {
           await this.nativeFeishuGateway.stopAll();
+          if (this.resolveFeishuRuntimeOwnership(FeishuEngineKey.Hermes) === FeishuRuntimeOwnership.LocalRuntime) {
+            return;
+          }
           await this.syncHermesConfig?.();
           await this.ensureHermesGatewayReady?.();
         } catch (error: any) {

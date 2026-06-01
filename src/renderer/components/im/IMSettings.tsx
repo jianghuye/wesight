@@ -7,7 +7,7 @@ import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroico
 import { CheckCircleIcon, ExclamationTriangleIcon, SignalIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 import { CoworkAgentEngine } from '@shared/cowork/constants';
-import { FEISHU_ENGINE_KEYS, FeishuEngineKey, type FeishuEngineKeyType, FeishuManagementMode } from '@shared/im/constants';
+import { FEISHU_ENGINE_KEYS, FeishuEngineKey, type FeishuEngineKeyType, FeishuManagementMode, FeishuRuntimeOwnership } from '@shared/im/constants';
 import type { Platform } from '@shared/platform';
 import { PlatformRegistry } from '@shared/platform';
 import WecomAIBotSDK from '@wecom/wecom-aibot-sdk';
@@ -127,7 +127,7 @@ const feishuEngineLabel = (engineKey: FeishuEngineKeyType): string => {
 
 const IMSettings: React.FC = () => {
   const dispatch = useDispatch();
-  const { config, status, isLoading } = useSelector((state: RootState) => state.im);
+  const { config, status, isLoading, error } = useSelector((state: RootState) => state.im);
   const coworkConfig = useSelector((state: RootState) => state.cowork.config);
   const [activePlatform, setActivePlatform] = useState<Platform>('weixin');
   const [activeQQInstanceId, setActiveQQInstanceId] = useState<string | null>(null);
@@ -137,6 +137,7 @@ const IMSettings: React.FC = () => {
   const [selectedFeishuEngineKey, setSelectedFeishuEngineKey] = useState<FeishuEngineKeyType>(FeishuEngineKey.OpenClaw);
   const [feishuImporting, setFeishuImporting] = useState(false);
   const [feishuModeSwitching, setFeishuModeSwitching] = useState(false);
+  const [feishuOwnershipNotice, setFeishuOwnershipNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [activeDingTalkInstanceId, setActiveDingTalkInstanceId] = useState<string | null>(null);
   const [dingtalkExpanded, setDingtalkExpanded] = useState(false);
   const [testingPlatform, setTestingPlatform] = useState<Platform | null>(null);
@@ -353,9 +354,23 @@ const IMSettings: React.FC = () => {
   };
   const feishuOpenClawLocalStatus = status.feishu?.openClawLocal;
   const feishuManagementMode = config.settings.feishuManagementMode || FeishuManagementMode.LocalOpenClaw;
+  const feishuOwnershipByEngine = config.settings.feishuOwnershipByEngine || {};
+  const selectedFeishuRuntimeOwnership = feishuOwnershipByEngine[selectedFeishuEngineKey]
+    || (selectedFeishuEngineKey === FeishuEngineKey.OpenClaw && feishuManagementMode === FeishuManagementMode.LocalOpenClaw
+      ? FeishuRuntimeOwnership.LocalRuntime
+      : FeishuRuntimeOwnership.WesightManaged);
+  const selectedFeishuRuntimeStatus = status.feishu?.runtimeOwnership?.[selectedFeishuEngineKey];
+  const feishuSupportsRuntimeOwnership = selectedFeishuEngineKey === FeishuEngineKey.OpenClaw
+    || selectedFeishuEngineKey === FeishuEngineKey.Hermes;
+  const feishuLocalRuntimeOwned = feishuSupportsRuntimeOwnership
+    && selectedFeishuRuntimeOwnership === FeishuRuntimeOwnership.LocalRuntime;
   const feishuLocalOpenClawOwned = selectedFeishuEngineKey === FeishuEngineKey.OpenClaw
-    && feishuManagementMode === FeishuManagementMode.LocalOpenClaw
-    && Boolean(feishuOpenClawLocalStatus?.configured || feishuOpenClawLocalStatus?.running);
+    && feishuLocalRuntimeOwned
+    && Boolean(
+      feishuOpenClawLocalStatus?.configured
+      || feishuOpenClawLocalStatus?.running
+      || selectedFeishuRuntimeStatus?.launchAgentInstalled
+    );
   const feishuImportedFromOpenClaw = feishuMultiConfig.instances.some((instance) => instance.importSource === 'openclaw_local');
   const feishuAgentEngine = coworkAgentEngineFromFeishuKey(selectedFeishuEngineKey);
   const isFeishuAgentEngineSupported = feishuAgentEngine === CoworkAgentEngine.OpenClaw
@@ -368,6 +383,7 @@ const IMSettings: React.FC = () => {
   useEffect(() => {
     setSelectedFeishuEngineKey(activeFeishuEngineKey);
     setActiveFeishuInstanceId(null);
+    setFeishuOwnershipNotice(null);
   }, [activeFeishuEngineKey]);
 
   // Inline QR code state for feishu bot creation (mirroring WeCom quick-setup pattern)
@@ -1516,11 +1532,11 @@ const IMSettings: React.FC = () => {
                     {i18nService.t('imFeishuManagementTitle')}
                   </div>
                   <div className="mt-1 text-xs text-secondary leading-relaxed">
-                    {selectedFeishuEngineKey !== FeishuEngineKey.OpenClaw
+                    {!feishuSupportsRuntimeOwnership
                       ? i18nService.t('imFeishuEngineProfileManagedHint').replace('{engine}', feishuEngineLabel(selectedFeishuEngineKey))
-                      : feishuManagementMode === FeishuManagementMode.WesightManaged
-                      ? i18nService.t('imFeishuManagementWesightManagedHint')
-                      : i18nService.t('imFeishuManagementLocalOpenClawHint')}
+                      : feishuLocalRuntimeOwned
+                      ? i18nService.t('imFeishuRuntimeOwnershipLocalHint').replace('{engine}', feishuEngineLabel(selectedFeishuEngineKey))
+                      : i18nService.t('imFeishuRuntimeOwnershipWesightHint').replace('{engine}', feishuEngineLabel(selectedFeishuEngineKey))}
                   </div>
                   {selectedFeishuEngineKey === FeishuEngineKey.OpenClaw && feishuOpenClawLocalStatus?.configured && (
                     <div className="mt-2 text-xs text-secondary">
@@ -1529,15 +1545,31 @@ const IMSettings: React.FC = () => {
                         .replace('{state}', feishuOpenClawLocalStatus.running ? i18nService.t('imFeishuLocalOpenClawRunning') : i18nService.t('imFeishuLocalOpenClawConfigured'))}
                     </div>
                   )}
+                  {feishuSupportsRuntimeOwnership && selectedFeishuRuntimeStatus && (
+                    <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-secondary">
+                      <div>
+                        {i18nService.t('imFeishuRuntimeLaunchAgent')}: {selectedFeishuRuntimeStatus.launchAgentLoaded
+                          ? i18nService.t('imFeishuLaunchAgentRunning')
+                          : selectedFeishuRuntimeStatus.launchAgentInstalled
+                          ? i18nService.t('imFeishuLaunchAgentInstalled')
+                          : i18nService.t('imFeishuLaunchAgentNotInstalled')}
+                      </div>
+                      {selectedFeishuRuntimeStatus.configPath && (
+                        <div className="truncate">
+                          {i18nService.t('imFeishuRuntimeConfigPath')}: {selectedFeishuRuntimeStatus.configPath}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-medium ${
-                  selectedFeishuEngineKey !== FeishuEngineKey.OpenClaw || feishuManagementMode === FeishuManagementMode.WesightManaged
+                  !feishuSupportsRuntimeOwnership || !feishuLocalRuntimeOwned
                     ? 'bg-primary/10 text-primary'
                     : 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-300'
                 }`}>
-                  {selectedFeishuEngineKey !== FeishuEngineKey.OpenClaw || feishuManagementMode === FeishuManagementMode.WesightManaged
-                    ? i18nService.t('imFeishuManagementModeWesight')
-                    : i18nService.t('imFeishuManagementModeLocalOpenClaw')}
+                  {!feishuSupportsRuntimeOwnership || !feishuLocalRuntimeOwned
+                    ? i18nService.t('imFeishuRuntimeOwnershipWesight')
+                    : i18nService.t('imFeishuRuntimeOwnershipLocal')}
                 </span>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -1559,35 +1591,87 @@ const IMSettings: React.FC = () => {
                     {feishuImporting ? i18nService.t('imFeishuImportingOpenClaw') : i18nService.t('imFeishuImportOpenClaw')}
                   </button>
                 )}
-                {selectedFeishuEngineKey === FeishuEngineKey.OpenClaw && feishuImportedFromOpenClaw && feishuManagementMode !== FeishuManagementMode.WesightManaged && (
+                {feishuSupportsRuntimeOwnership && feishuLocalRuntimeOwned && (
                   <button
                     type="button"
                     disabled={feishuModeSwitching}
                     onClick={async () => {
                       setFeishuModeSwitching(true);
-                      await imService.setFeishuManagementMode(FeishuManagementMode.WesightManaged);
+                      setFeishuOwnershipNotice(null);
+                      dispatch(clearError());
+                      const success = await imService.setFeishuRuntimeOwnership(selectedFeishuEngineKey, FeishuRuntimeOwnership.WesightManaged);
+                      setFeishuOwnershipNotice({
+                        type: success ? 'success' : 'error',
+                        message: success
+                          ? i18nService.t('imFeishuRuntimeOwnershipUpdated')
+                          : i18nService.t('imFeishuRuntimeOwnershipFailed'),
+                      });
                       setFeishuModeSwitching(false);
                     }}
                     className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60 transition-colors"
                   >
-                    {feishuModeSwitching ? i18nService.t('imFeishuManagementSwitching') : i18nService.t('imFeishuTakeOverByWesight')}
+                    {feishuModeSwitching ? i18nService.t('imFeishuRuntimeOwnershipSwitching') : i18nService.t('imFeishuTransferToWesightRuntime')}
                   </button>
                 )}
-                {selectedFeishuEngineKey === FeishuEngineKey.OpenClaw && feishuManagementMode === FeishuManagementMode.WesightManaged && (
+                {feishuSupportsRuntimeOwnership && !feishuLocalRuntimeOwned && (
+                  <button
+                    type="button"
+                    disabled={feishuModeSwitching || !feishuMultiConfig.instances.some((instance) => instance.enabled)}
+                    onClick={async () => {
+                      setFeishuModeSwitching(true);
+                      setFeishuOwnershipNotice(null);
+                      dispatch(clearError());
+                      const success = await imService.setFeishuRuntimeOwnership(selectedFeishuEngineKey, FeishuRuntimeOwnership.LocalRuntime);
+                      setFeishuOwnershipNotice({
+                        type: success ? 'success' : 'error',
+                        message: success
+                          ? i18nService.t('imFeishuRuntimeOwnershipUpdated')
+                          : i18nService.t('imFeishuRuntimeOwnershipFailed'),
+                      });
+                      setFeishuModeSwitching(false);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised border border-border-subtle text-foreground hover:bg-surface disabled:opacity-60 transition-colors"
+                  >
+                    {feishuModeSwitching ? i18nService.t('imFeishuRuntimeOwnershipSwitching') : i18nService.t('imFeishuTransferToLocalRuntime')}
+                  </button>
+                )}
+                {feishuSupportsRuntimeOwnership && (
                   <button
                     type="button"
                     disabled={feishuModeSwitching}
                     onClick={async () => {
                       setFeishuModeSwitching(true);
-                      await imService.setFeishuManagementMode(FeishuManagementMode.LocalOpenClaw);
+                      setFeishuOwnershipNotice(null);
+                      dispatch(clearError());
+                      const success = await imService.refreshFeishuRuntimeOwnership(selectedFeishuEngineKey);
+                      setFeishuOwnershipNotice({
+                        type: success ? 'success' : 'error',
+                        message: success
+                          ? i18nService.t('imFeishuRuntimeOwnershipRefreshed')
+                          : i18nService.t('imFeishuRuntimeOwnershipFailed'),
+                      });
                       setFeishuModeSwitching(false);
                     }}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised border border-border-subtle text-foreground hover:bg-surface disabled:opacity-60 transition-colors"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised border border-border-subtle text-secondary hover:text-foreground hover:bg-surface disabled:opacity-60 transition-colors"
                   >
-                    {feishuModeSwitching ? i18nService.t('imFeishuManagementSwitching') : i18nService.t('imFeishuReturnToLocalOpenClaw')}
+                    {i18nService.t('imFeishuRuntimeOwnershipRefresh')}
                   </button>
                 )}
               </div>
+              {feishuOwnershipNotice && (
+                <div className={`mt-2 rounded-lg px-3 py-2 text-xs ${
+                  feishuOwnershipNotice.type === 'success'
+                    ? 'bg-green-500/10 text-green-700 dark:text-green-300'
+                    : 'bg-red-500/10 text-red-600 dark:text-red-300'
+                }`}>
+                  {feishuOwnershipNotice.message}
+                </div>
+              )}
+              {error && (
+                <div className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">
+                  {error}
+                </div>
+              )}
               {selectedFeishuEngineKey === FeishuEngineKey.OpenClaw && feishuOpenClawLocalStatus?.secretNeedsInput && (
                 <div className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
                   {i18nService.t('imFeishuImportSecretNeedsInput')}
@@ -1596,11 +1680,13 @@ const IMSettings: React.FC = () => {
             </div>
             <img src={PlatformRegistry.logo('feishu')} alt="Feishu" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
             <p className="text-sm text-secondary mb-4">
-              {feishuMultiConfig.instances.length === 0
+              {feishuLocalRuntimeOwned
+                ? i18nService.t('imFeishuLocalRuntimeReadonlyHint')
+                : feishuMultiConfig.instances.length === 0
                 ? (language === 'zh' ? '尚未添加飞书实例，点击下方按钮添加' : 'No Feishu instances yet. Click below to add one.')
                 : (language === 'zh' ? '请在左侧选择一个飞书实例' : 'Select a Feishu instance from the sidebar.')}
             </p>
-            {feishuMultiConfig.instances.length < MAX_FEISHU_INSTANCES && (
+            {!feishuLocalRuntimeOwned && feishuMultiConfig.instances.length < MAX_FEISHU_INSTANCES && (
               <button
                 type="button"
                 onClick={async (e) => {
@@ -1628,11 +1714,14 @@ const IMSettings: React.FC = () => {
                 agentEngine={feishuAgentEngine}
                 isAgentEngineSupported={isFeishuAgentEngineSupported}
                 isLocalOpenClawOwned={feishuLocalOpenClawOwned}
+                readOnly={feishuLocalRuntimeOwned}
                 enabledInstanceCount={enabledFeishuInstanceCount}
                 onConfigChange={(update) => {
+                  if (feishuLocalRuntimeOwned) return;
                   dispatch(setFeishuInstanceConfig({ instanceId: activeFeishuInstanceId, config: update, engineKey: selectedFeishuEngineKey }));
                 }}
                 onSave={async (override) => {
+                  if (feishuLocalRuntimeOwned) return;
                   const configToSave = override ? { ...selectedInstance, ...override } : selectedInstance;
                   if (selectedInstance.enabled) {
                     await imService.updateFeishuInstanceConfig(activeFeishuInstanceId, configToSave, selectedFeishuEngineKey);
@@ -1641,15 +1730,18 @@ const IMSettings: React.FC = () => {
                   }
                 }}
                 onRename={async (newName) => {
+                  if (feishuLocalRuntimeOwned) return;
                   dispatch(setFeishuInstanceConfig({ instanceId: activeFeishuInstanceId, config: { instanceName: newName } as any, engineKey: selectedFeishuEngineKey }));
                   await imService.persistFeishuInstanceConfig(activeFeishuInstanceId, { instanceName: newName } as any, selectedFeishuEngineKey);
                 }}
                 onDelete={async () => {
+                  if (feishuLocalRuntimeOwned) return;
                   await imService.deleteFeishuInstance(activeFeishuInstanceId, selectedFeishuEngineKey);
                   const remaining = feishuMultiConfig.instances.filter(i => i.instanceId !== activeFeishuInstanceId);
                   setActiveFeishuInstanceId(remaining.length > 0 ? remaining[0].instanceId : null);
                 }}
                 onToggleEnabled={async () => {
+                  if (feishuLocalRuntimeOwned) return;
                   const newEnabled = !selectedInstance.enabled;
                   if (newEnabled && !(selectedInstance.appId && selectedInstance.appSecret)) return;
                   if (newEnabled && !isFeishuAgentEngineSupported) return;

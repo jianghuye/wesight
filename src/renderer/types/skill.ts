@@ -1,3 +1,5 @@
+import type { SkillMarketplaceSort, SkillMarketplaceSourceType } from '@shared/skills/constants';
+
 // Skill type definition
 export interface Skill {
   id: string;
@@ -32,11 +34,24 @@ export interface MarketplaceSkill {
   name: string;
   description: string | LocalizedText;
   tags?: string[];
-  url: string;              // Download URL (.zip)
-  version: string;
+  url: string;              // Download source, e.g. zip URL or skillhub:<slug>
+  version?: string;
+  slug?: string;
+  category?: string;
+  sourceType?: SkillMarketplaceSourceType;
+  rating?: number;
+  stars?: number;
+  hotScore?: number;
   source: {
     from: string;           // e.g. "Github"
     url: string;            // Source repo URL
     author?: string;        // Author name
   };
+}
+
+export interface SkillMarketplaceOptions {
+  query?: string;
+  category?: string;
+  sort?: SkillMarketplaceSort;
+  limit?: number;
 }

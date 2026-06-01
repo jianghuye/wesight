@@ -79,6 +79,20 @@ const normalizeRuntimeSource = (
   return options.runtimeSource ?? RuntimeCallSource.Chat;
 };
 
+const runtimeSnapshotToModelSnapshot = (
+  options: CoworkStartOptions | CoworkContinueOptions,
+): RuntimeModelSnapshot | null => {
+  const snapshot = options.runtimeSnapshot;
+  if (!snapshot) return null;
+  return {
+    providerKey: snapshot.providerKey,
+    providerName: snapshot.providerName,
+    modelId: snapshot.modelId,
+    modelName: snapshot.modelName,
+    configSource: snapshot.configSource,
+  };
+};
+
 export class RuntimeTelemetryTracker {
   private readonly store: CoworkStore;
   private readonly telemetryStore: RuntimeTelemetryStore;
@@ -98,7 +112,7 @@ export class RuntimeTelemetryTracker {
     options: CoworkStartOptions | CoworkContinueOptions,
   ): void {
     const session = this.store.getSession(sessionId);
-    const model = this.getModelSnapshot(engine);
+    const model = runtimeSnapshotToModelSnapshot(options) ?? this.getModelSnapshot(engine);
     const callId = randomUUID();
     const startedAt = Date.now();
     const contextText = getPromptContextText(session?.messages ?? [], prompt);

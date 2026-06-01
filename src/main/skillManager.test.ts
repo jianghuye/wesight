@@ -1,10 +1,10 @@
 /**
- * Unit tests for parseClawhubUrl in skillManager.ts.
+ * Unit tests for marketplace source parsers in skillManager.ts.
  *
  * Logic is mirrored inline because skillManager.ts imports Electron APIs
  * which cannot be loaded outside the Electron main process.
  */
-import { test, expect } from 'vitest';
+import { expect,test } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mirror of parseClawhubUrl from skillManager.ts
@@ -28,6 +28,30 @@ const parseClawhubUrl = (source: string): { name: string } | null => {
       return { name: segments[1] };
     }
     return null;
+  } catch {
+    return null;
+  }
+};
+
+const parseSkillHubSource = (source: string): { slug: string } | null => {
+  const trimmed = source.trim();
+  if (trimmed.startsWith('skillhub:')) {
+    const slug = trimmed.slice('skillhub:'.length).trim();
+    return slug ? { slug } : null;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const host = url.hostname.toLowerCase();
+    if (!['skillhub.lol', 'www.skillhub.lol', 'skillhub.club', 'www.skillhub.club'].includes(host)) {
+      return null;
+    }
+    const segments = url.pathname.split('/').filter(Boolean);
+    const skillIndex = segments.indexOf('skills');
+    if (skillIndex < 0 || !segments[skillIndex + 1]) {
+      return null;
+    }
+    return { slug: decodeURIComponent(segments[skillIndex + 1]) };
   } catch {
     return null;
   }
@@ -91,4 +115,20 @@ test('clawhub: invalid URL returns null', () => {
 
 test('clawhub: empty string returns null', () => {
   expect(parseClawhubUrl('')).toBeNull();
+});
+
+test('skillhub: scheme source extracts slug', () => {
+  expect(parseSkillHubSource('skillhub:docs-writer')).toEqual({ slug: 'docs-writer' });
+});
+
+test('skillhub: web URL extracts slug', () => {
+  expect(parseSkillHubSource('https://skillhub.lol/skills/docs-writer')).toEqual({ slug: 'docs-writer' });
+});
+
+test('skillhub: API host URL extracts slug', () => {
+  expect(parseSkillHubSource('https://skillhub.club/skills/docs-writer')).toEqual({ slug: 'docs-writer' });
+});
+
+test('skillhub: non-skillhub input returns null', () => {
+  expect(parseSkillHubSource('https://github.com/owner/repo')).toBeNull();
 });

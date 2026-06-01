@@ -2,12 +2,15 @@ import './DesktopPetWindow.css';
 
 import {
   DEFAULT_PET_CONFIG,
+  type DesktopPetTaskSnapshot,
+  DesktopPetTaskSource,
+  DesktopPetTaskStatus,
   normalizePetConfig,
   type PetConfig,
   PetMotion,
   type PetPosition,
 } from '@shared/pet/constants';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { i18nService } from '../../services/i18n';
 import PetSprite, { PetMood } from './PetSprite';
@@ -44,14 +47,19 @@ const IDLE_BUBBLE_KEYS = [
 const MOVE_THRESHOLD_PX = 4;
 const BUBBLE_HIDE_DELAY_MS = 2100;
 const WANDER_INTERVAL_MS = 7800;
+const TASK_AUTO_COLLAPSE_DELAY_MS = 8000;
 
 const DesktopPetWindow: React.FC = () => {
   const [config, setConfig] = useState<PetConfig>(() => DEFAULT_PET_CONFIG);
+  const [taskSnapshot, setTaskSnapshot] = useState<DesktopPetTaskSnapshot | null>(null);
+  const [isTaskCollapsed, setIsTaskCollapsed] = useState(false);
   const [mood, setMood] = useState<PetMood>(PetMood.Idle);
   const [bubbleKey, setBubbleKey] = useState<string>('desktopPetBubbleIdle');
   const [isBubbleVisible, setIsBubbleVisible] = useState(false);
   const [dragPhase, setDragPhase] = useState<DragPhase>(DragPhase.Idle);
   const bubbleTimerRef = useRef<number | null>(null);
+  const taskCollapseTimerRef = useRef<number | null>(null);
+  const lastTaskSessionRef = useRef<string | null>(null);
   const dragRef = useRef<DragState>({
     phase: DragPhase.Idle,
     startScreenX: 0,
@@ -88,12 +96,58 @@ const DesktopPetWindow: React.FC = () => {
       showBubble('desktopPetBubbleChanged');
     });
 
+    void window.electron.desktopPet.getTaskSnapshot().then((snapshot) => {
+      if (!active) return;
+      setTaskSnapshot(snapshot);
+      setIsTaskCollapsed(snapshot?.status === DesktopPetTaskStatus.Completed);
+      lastTaskSessionRef.current = snapshot?.sessionId ?? null;
+    });
+
+    const unsubscribeTask = window.electron.desktopPet.onTaskChanged((snapshot) => {
+      if (!active) return;
+      const previousSessionId = lastTaskSessionRef.current;
+      lastTaskSessionRef.current = snapshot?.sessionId ?? null;
+      setTaskSnapshot(snapshot);
+
+      if (taskCollapseTimerRef.current != null) {
+        window.clearTimeout(taskCollapseTimerRef.current);
+        taskCollapseTimerRef.current = null;
+      }
+
+      if (!snapshot) {
+        setIsTaskCollapsed(false);
+        return;
+      }
+
+      const isNewTask = previousSessionId !== snapshot.sessionId;
+      const isActiveTask = snapshot.status === DesktopPetTaskStatus.Waiting
+        || snapshot.status === DesktopPetTaskStatus.Thinking
+        || snapshot.status === DesktopPetTaskStatus.Replying
+        || snapshot.status === DesktopPetTaskStatus.Coding
+        || snapshot.status === DesktopPetTaskStatus.Permission;
+
+      if (isNewTask || isActiveTask) {
+        setIsTaskCollapsed(false);
+      }
+
+      if (snapshot.status === DesktopPetTaskStatus.Completed) {
+        taskCollapseTimerRef.current = window.setTimeout(() => {
+          setIsTaskCollapsed(true);
+          taskCollapseTimerRef.current = null;
+        }, TASK_AUTO_COLLAPSE_DELAY_MS);
+      }
+    });
+
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeTask();
       document.documentElement.classList.remove('desktop-pet-page');
       if (bubbleTimerRef.current != null) {
         window.clearTimeout(bubbleTimerRef.current);
+      }
+      if (taskCollapseTimerRef.current != null) {
+        window.clearTimeout(taskCollapseTimerRef.current);
       }
     };
   }, [showBubble]);
@@ -251,16 +305,85 @@ const DesktopPetWindow: React.FC = () => {
     showBubble('desktopPetBubbleOpenMain');
   };
 
+  const handleOpenTask = (event?: React.MouseEvent<HTMLElement>) => {
+    event?.stopPropagation();
+    if (!taskSnapshot) {
+      void window.electron.desktopPet.openMainWindow();
+      return;
+    }
+    void window.electron.desktopPet.openTask(taskSnapshot.sessionId);
+  };
+
+  const handleCollapseTask = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    setIsTaskCollapsed(true);
+  };
+
+  const handleExpandTask = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    setIsTaskCollapsed(false);
+  };
+
+  const getTaskStatusLabel = (status: DesktopPetTaskSnapshot['status']): string => {
+    switch (status) {
+      case DesktopPetTaskStatus.Waiting:
+        return i18nService.t('desktopPetTaskStatusWaiting');
+      case DesktopPetTaskStatus.Thinking:
+        return i18nService.t('desktopPetTaskStatusThinking');
+      case DesktopPetTaskStatus.Replying:
+        return i18nService.t('desktopPetTaskStatusReplying');
+      case DesktopPetTaskStatus.Coding:
+        return i18nService.t('desktopPetTaskStatusCoding');
+      case DesktopPetTaskStatus.Permission:
+        return i18nService.t('desktopPetTaskStatusPermission');
+      case DesktopPetTaskStatus.Completed:
+        return i18nService.t('desktopPetTaskStatusCompleted');
+      case DesktopPetTaskStatus.Error:
+        return i18nService.t('desktopPetTaskStatusError');
+      case DesktopPetTaskStatus.Stopped:
+        return i18nService.t('desktopPetTaskStatusStopped');
+      default:
+        return i18nService.t('desktopPetTaskStatusWaiting');
+    }
+  };
+
+  const getTaskSourceLabel = (source: DesktopPetTaskSnapshot['source']): string => {
+    if (source === DesktopPetTaskSource.Im) return i18nService.t('desktopPetTaskSourceIm');
+    if (source === DesktopPetTaskSource.Scheduled) return i18nService.t('desktopPetTaskSourceScheduled');
+    return i18nService.t('desktopPetTaskSourceChat');
+  };
+
+  const getMoodForTask = (snapshot: DesktopPetTaskSnapshot | null): PetMood | null => {
+    if (!snapshot || isTaskCollapsed) return null;
+    switch (snapshot.status) {
+      case DesktopPetTaskStatus.Coding:
+        return PetMood.Coding;
+      case DesktopPetTaskStatus.Waiting:
+      case DesktopPetTaskStatus.Thinking:
+      case DesktopPetTaskStatus.Permission:
+        return PetMood.Thinking;
+      case DesktopPetTaskStatus.Replying:
+        return PetMood.Working;
+      case DesktopPetTaskStatus.Completed:
+        return PetMood.Done;
+      case DesktopPetTaskStatus.Error:
+        return PetMood.Error;
+      default:
+        return null;
+    }
+  };
+
   const stageClassName = [
     'desktop-pet-stage',
     dragPhase === DragPhase.Dragging ? 'desktop-pet-stage--dragging' : '',
     isBubbleVisible ? 'desktop-pet-stage--bubble' : '',
+    taskSnapshot && !isTaskCollapsed ? 'desktop-pet-stage--task-open' : '',
   ].filter(Boolean).join(' ');
 
-  const resolvedMood = useMemo(() => {
-    if (dragPhase === DragPhase.Dragging) return PetMood.Dragging;
-    return mood;
-  }, [dragPhase, mood]);
+  const taskMood = getMoodForTask(taskSnapshot);
+  const resolvedMood = dragPhase === DragPhase.Dragging
+    ? PetMood.Dragging
+    : taskMood ?? mood;
 
   if (!config.enabled) {
     return null;
@@ -268,6 +391,43 @@ const DesktopPetWindow: React.FC = () => {
 
   return (
     <main className={stageClassName}>
+      {taskSnapshot && !isTaskCollapsed && (
+        <section
+          className="desktop-pet-task-card"
+          onClick={handleOpenTask}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="desktop-pet-task-close"
+            onClick={handleCollapseTask}
+            aria-label={i18nService.t('desktopPetTaskCollapse')}
+          >
+            ×
+          </button>
+          <div className="desktop-pet-task-heading">
+            <span className="desktop-pet-task-app">WeSight</span>
+            <span className="desktop-pet-task-source">{getTaskSourceLabel(taskSnapshot.source)}</span>
+          </div>
+          <div className="desktop-pet-task-title">{taskSnapshot.title}</div>
+          <div className="desktop-pet-task-meta">
+            <span>{taskSnapshot.projectName}</span>
+            <span>{taskSnapshot.engineLabel} · {taskSnapshot.modelLabel}</span>
+          </div>
+          <div className="desktop-pet-task-footer">
+            <span className={`desktop-pet-task-status desktop-pet-task-status--${taskSnapshot.status}`}>
+              {getTaskStatusLabel(taskSnapshot.status)}
+            </span>
+            <button
+              type="button"
+              className="desktop-pet-task-reply"
+              onClick={handleOpenTask}
+            >
+              {i18nService.t('desktopPetTaskOpen')}
+            </button>
+          </div>
+        </section>
+      )}
       <div
         className="desktop-pet-hit-area"
         onPointerDown={handlePointerDown}
@@ -290,6 +450,16 @@ const DesktopPetWindow: React.FC = () => {
           />
         </div>
         <span className="desktop-pet-action-dot" aria-hidden="true" />
+        {taskSnapshot && isTaskCollapsed && (
+          <button
+            type="button"
+            className={`desktop-pet-task-pill desktop-pet-task-pill--${taskSnapshot.status}`}
+            onClick={handleExpandTask}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {getTaskStatusLabel(taskSnapshot.status)}
+          </button>
+        )}
       </div>
     </main>
   );

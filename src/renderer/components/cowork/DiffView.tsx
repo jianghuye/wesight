@@ -4,7 +4,7 @@
  * Supports unified and split (side-by-side) view modes.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo,useState } from 'react';
 
 type DiffLineType = 'added' | 'removed' | 'context';
 
@@ -130,6 +130,7 @@ interface DiffViewProps {
   oldStr: string;
   newStr: string;
   filePath?: string;
+  maxHeightClassName?: string;
 }
 
 const LINE_COLORS: Record<DiffLineType, { bg: string; text: string; gutter: string }> = {
@@ -156,7 +157,7 @@ const DiffLinePrefix: Record<DiffLineType, string> = {
   context: ' ',
 };
 
-const DiffView: React.FC<DiffViewProps> = ({ oldStr, newStr, filePath }) => {
+const DiffView: React.FC<DiffViewProps> = ({ oldStr, newStr, filePath, maxHeightClassName = 'max-h-80' }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('unified');
 
   const diffLines = useMemo(() => computeDiffLines(oldStr, newStr), [oldStr, newStr]);
@@ -259,7 +260,7 @@ const DiffView: React.FC<DiffViewProps> = ({ oldStr, newStr, filePath }) => {
       </div>
 
       {/* Diff content */}
-      <div className="max-h-80 overflow-auto">
+      <div className={`${maxHeightClassName} overflow-auto`}>
         {viewMode === 'unified' ? (
           <table className="w-full text-xs font-mono border-collapse">
             <tbody>

@@ -344,7 +344,7 @@ export class OpenClawChannelSessionSync {
   resolveOrCreateSession(sessionKey: string): string | null {
     // 1. Skip WeSight-originated sessions
     if (isManagedSessionKey(sessionKey)) {
-      console.log('[ChannelSessionSync] skipped: WeSight-originated session');
+      console.debug('[ChannelSessionSync] skipped WeSight-originated session');
       return null;
     }
 
@@ -362,15 +362,15 @@ export class OpenClawChannelSessionSync {
     // 3. Parse channel info
     const parsed = parseChannelSessionKey(sessionKey);
     if (!parsed) {
-      console.log('[ChannelSessionSync] parse failed: not a recognized channel key:', sessionKey);
+      console.debug('[ChannelSessionSync] ignored non-channel session key');
       this.rejectedKeys.add(sessionKey);
       return null;
     }
-    console.log('[ChannelSessionSync] parsed: platform=', parsed.platform, 'conversationId=', parsed.conversationId);
+    console.debug('[ChannelSessionSync] parsed channel session:', parsed.platform);
 
     // 4. Check persistent mapping in im_session_mappings
     const existingMapping = this.imStore.getSessionMapping(parsed.conversationId, parsed.platform);
-    console.log('[ChannelSessionSync] existing mapping:', existingMapping ? `coworkSessionId=${existingMapping.coworkSessionId} agentId=${existingMapping.agentId}` : 'none');
+    console.debug('[ChannelSessionSync] existing mapping:', existingMapping ? `coworkSessionId=${existingMapping.coworkSessionId} agentId=${existingMapping.agentId}` : 'none');
     if (existingMapping) {
       // Verify the Cowork session still exists
       const session = this.coworkStore.getSession(existingMapping.coworkSessionId);
@@ -399,13 +399,13 @@ export class OpenClawChannelSessionSync {
           this.agentChangedSessionIds.add(newSession.id);
           return newSession.id;
         }
-        console.log('[ChannelSessionSync] existing cowork session found, reusing:', existingMapping.coworkSessionId);
+        console.debug('[ChannelSessionSync] existing cowork session found, reusing:', existingMapping.coworkSessionId);
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
         this.imStore.updateSessionLastActive(parsed.conversationId, parsed.platform);
         return existingMapping.coworkSessionId;
       }
       // Session was deleted, remove stale mapping
-      console.log('[ChannelSessionSync] cowork session deleted, removing stale mapping');
+      console.debug('[ChannelSessionSync] cowork session deleted, removing stale mapping');
       this.imStore.deleteSessionMapping(parsed.conversationId, parsed.platform);
     }
 

@@ -1,19 +1,25 @@
+import { XMarkIcon } from '@heroicons/react/24/outline';
+import {
+  type CoworkAgentEngine as CoworkAgentEngineType,
+  DefaultCoworkAgentEngine,
+} from '@shared/cowork/constants';
+import type { Platform } from '@shared/platform';
+import { PlatformRegistry } from '@shared/platform';
 import React, { useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
-import { RootState } from '../../store';
+
 import { agentService } from '../../services/agent';
-import { imService } from '../../services/im';
 import { i18nService } from '../../services/i18n';
-import { XMarkIcon } from '@heroicons/react/24/outline';
-import TrashIcon from '../icons/TrashIcon';
+import { imService } from '../../services/im';
+import { RootState } from '../../store';
 import type { Agent } from '../../types/agent';
-import type { Platform } from '@shared/platform';
 import type { IMGatewayConfig } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
-import { PlatformRegistry } from '@shared/platform';
+import Modal from '../common/Modal';
+import TrashIcon from '../icons/TrashIcon';
+import AgentEngineSelect from './AgentEngineSelect';
 import AgentSkillSelector from './AgentSkillSelector';
 import EmojiPicker from './EmojiPicker';
-import Modal from '../common/Modal';
 
 type SettingsTab = 'basic' | 'skills' | 'im';
 
@@ -34,6 +40,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
+  const [agentEngine, setAgentEngine] = useState<CoworkAgentEngineType>(DefaultCoworkAgentEngine);
   const [icon, setIcon] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -56,6 +63,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         setDescription(a.description);
         setSystemPrompt(a.systemPrompt);
         setIdentity(a.identity);
+        setAgentEngine(a.agentEngine || DefaultCoworkAgentEngine);
         setIcon(a.icon);
         setSkillIds(a.skillIds ?? []);
       }
@@ -67,7 +75,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         const bindings = cfg.settings?.platformAgentBindings || {};
         const bound = new Set<string>();
         for (const [key, boundAgentId] of Object.entries(bindings)) {
-          if (boundAgentId === agentId) {
+          if (boundAgentId === agentId || boundAgentId === `agent:${agentId}`) {
             bound.add(key);
           }
         }
@@ -89,6 +97,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         description: description.trim(),
         systemPrompt: systemPrompt.trim(),
         identity: identity.trim(),
+        agentEngine,
         icon: icon.trim(),
         skillIds,
       });
@@ -100,13 +109,13 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         const currentBindings = { ...(imConfig.settings?.platformAgentBindings || {}) };
         // Remove old bindings for this agent
         for (const key of Object.keys(currentBindings)) {
-          if (currentBindings[key] === agentId) {
+          if (currentBindings[key] === agentId || currentBindings[key] === `agent:${agentId}`) {
             delete currentBindings[key];
           }
         }
         // Add new bindings
         for (const key of boundKeys) {
-          currentBindings[key] = agentId;
+          currentBindings[key] = `agent:${agentId}`;
         }
         await imService.persistConfig({
           settings: { ...imConfig.settings, platformAgentBindings: currentBindings },
@@ -236,9 +245,10 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         {connectedInstances.map((inst: any, idx: number) => {
           const bindingKey = `${platform}:${inst.instanceId}`;
           const isBound = boundKeys.has(bindingKey);
-          const otherAgentId = bindings[bindingKey];
-          const boundToOther = otherAgentId && otherAgentId !== agentId;
-          const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
+    const otherBinding = bindings[bindingKey];
+    const otherAgentId = otherBinding?.startsWith('agent:') ? otherBinding.slice('agent:'.length) : otherBinding;
+    const boundToOther = otherAgentId && otherAgentId !== agentId;
+    const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
 
           return (
             <div
@@ -276,7 +286,8 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
     const configured = isPlatformConfigured(platform);
     const isBound = boundKeys.has(platform);
     const bindings = imConfig?.settings?.platformAgentBindings || {};
-    const otherAgentId = bindings[platform];
+    const otherBinding = bindings[platform];
+    const otherAgentId = otherBinding?.startsWith('agent:') ? otherBinding.slice('agent:'.length) : otherBinding;
     const boundToOther = configured && otherAgentId && otherAgentId !== agentId;
     const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
 
@@ -387,6 +398,15 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                   onChange={(e) => setDescription(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-secondary mb-1">
+                  {i18nService.t('agentEngineField')}
+                </label>
+                <AgentEngineSelect value={agentEngine} onChange={setAgentEngine} />
+                <p className="mt-1 text-xs text-secondary/60">
+                  {i18nService.t('agentEngineFieldHint')}
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-secondary mb-1">

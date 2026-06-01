@@ -3,21 +3,38 @@ import {
   CheckIcon,
   ChevronRightIcon,
   DocumentArrowDownIcon,
+  DocumentIcon,
   PhotoIcon,
+  QueueListIcon,
+  UserGroupIcon,
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
-import React, { useCallback, useEffect, useMemo,useRef, useState } from 'react';
+import { CoworkAgentEngine } from '@shared/cowork/constants';
+import { CoworkFileActivityStatus } from '@shared/cowork/fileActivity';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useDispatch,useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 
 import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { RootState } from '../../store';
 import { setActiveSkillIds } from '../../store/slices/skillSlice';
-import type { CoworkImageAttachment,CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
+import type {
+  CoworkImageAttachment,
+  CoworkMessage,
+  CoworkMessageMetadata,
+  RuntimeCallRecord,
+} from '../../types/cowork';
 import type { Skill } from '../../types/skill';
+import {
+  buildCoworkActivitySnapshot,
+  getFileChangeIdsForToolUse,
+  getPreferredActivityFileChangeId,
+} from '../../utils/coworkActivity';
+import { buildCoworkStudioSnapshot } from '../../utils/coworkStudio';
 import { getCompactFolderName } from '../../utils/path';
+import { getAgentEngineLabel } from '../agent/AgentEngineSelect';
 import Modal from '../common/Modal';
 import ComposeIcon from '../icons/ComposeIcon';
 import EllipsisHorizontalIcon from '../icons/EllipsisHorizontalIcon';
@@ -29,10 +46,23 @@ import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import TrashIcon from '../icons/TrashIcon';
 import MarkdownContent from '../MarkdownContent';
 import WindowTitleBar from '../window/WindowTitleBar';
-import CoworkEngineSelector from './CoworkEngineSelector';
+import {
+  ActivitySidebarOpenSource,
+  type ActivitySidebarOpenSource as ActivitySidebarOpenSourceType,
+  CoworkActivitySidebarMode,
+  type CoworkActivitySidebarMode as CoworkActivitySidebarModeType,
+} from './activitySidebarConstants';
+import {
+  ActivitySidebarResize,
+  clampActivitySidebarWidth,
+  parseStoredActivitySidebarWidth,
+} from './activitySidebarResize';
+import CoworkActivitySidebar from './CoworkActivitySidebar';
 import CoworkPromptInput, { type CoworkPromptInputRef, type CoworkSlashCommandHandler } from './CoworkPromptInput';
+import CoworkStudioView from './CoworkStudioView';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
+import { CoworkSessionViewMode, type CoworkSessionViewMode as CoworkSessionViewModeType } from './studioConstants';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
@@ -724,10 +754,12 @@ const ToolCallGroup: React.FC<{
   group: ToolGroupItem;
   isLastInSequence?: boolean;
   mapDisplayText?: (value: string) => string;
+  onOpenFileChange?: (fileChangeId: string) => void;
 }> = ({
   group,
   isLastInSequence = true,
   mapDisplayText,
+  onOpenFileChange,
 }) => {
   const { toolUse, toolResult } = group;
   const rawToolName = typeof toolUse.metadata?.toolName === 'string' ? toolUse.metadata.toolName : 'Tool';
@@ -763,6 +795,12 @@ const ToolCallGroup: React.FC<{
     [rawToolName, toolInput],
   );
   const isEditWithDiff = diffDataList !== null && diffDataList.length > 0;
+  const fileChangeIds = useMemo(() => getFileChangeIdsForToolUse(toolUse), [toolUse]);
+  const firstFileChangeId = fileChangeIds[0] ?? null;
+  const handleOpenFileChange = (fileChangeId: string | null) => {
+    if (!fileChangeId || !onOpenFileChange) return;
+    onOpenFileChange(fileChangeId);
+  };
 
   return (
     <div className="relative py-1">
@@ -770,48 +808,62 @@ const ToolCallGroup: React.FC<{
       {!isLastInSequence && (
         <div className="absolute left-[3.5px] top-[14px] bottom-[-8px] w-px bg-border" />
       )}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-start gap-2 text-left group relative z-10"
-      >
-        <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${
-          !toolResult
-            ? 'bg-blue-500 animate-pulse'
-            : isToolError
-              ? 'bg-red-500'
-              : 'bg-green-500'
-        }`} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-secondary">
-              {toolName}
-            </span>
-            {toolInputSummary && (
-              <code className="text-xs text-muted font-mono truncate max-w-[400px]">
-                {toolInputSummary}
-              </code>
+      <div className="relative z-10 flex items-start gap-2">
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="group flex min-w-0 flex-1 items-start gap-2 text-left"
+        >
+          <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${
+            !toolResult
+              ? 'bg-blue-500 animate-pulse'
+              : isToolError
+                ? 'bg-red-500'
+                : 'bg-green-500'
+          }`} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium text-secondary">
+                {toolName}
+              </span>
+              {toolInputSummary && (
+                <code className="text-xs text-muted font-mono truncate max-w-[400px]">
+                  {toolInputSummary}
+                </code>
+              )}
+            </div>
+            {toolResult && !isTodoWriteTool && (hasToolResultText || showNoDetailError) && (
+              <div className={`text-xs mt-0.5 ${
+                hasToolResultText
+                  ? 'text-muted'
+                  : showNoDetailError
+                    ? 'text-red-500/80'
+                    : 'text-muted'
+              }`}>
+                {hasToolResultText
+                  ? (toolResultSummary ?? `${resultLineCount} ${resultLineCount === 1 ? 'line' : 'lines'} of output`)
+                  : toolResultFallback}
+              </div>
+            )}
+            {!toolResult && (
+              <div className="text-xs text-muted mt-0.5">
+                {i18nService.t('coworkToolRunning')}
+              </div>
             )}
           </div>
-          {toolResult && !isTodoWriteTool && (hasToolResultText || showNoDetailError) && (
-            <div className={`text-xs mt-0.5 ${
-              hasToolResultText
-                ? 'text-muted'
-                : showNoDetailError
-                  ? 'text-red-500/80'
-                  : 'text-muted'
-            }`}>
-              {hasToolResultText
-                ? (toolResultSummary ?? `${resultLineCount} ${resultLineCount === 1 ? 'line' : 'lines'} of output`)
-                : toolResultFallback}
-            </div>
-          )}
-          {!toolResult && (
-            <div className="text-xs text-muted mt-0.5">
-              {i18nService.t('coworkToolRunning')}
-            </div>
-          )}
-        </div>
-      </button>
+        </button>
+        {firstFileChangeId && onOpenFileChange && (
+          <button
+            type="button"
+            onClick={() => handleOpenFileChange(firstFileChangeId)}
+            className="mt-[-1px] inline-flex shrink-0 items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] font-medium text-secondary transition-colors hover:bg-primary-muted hover:text-primary"
+            title={i18nService.t('coworkActivityViewCodeChange')}
+          >
+            <DocumentIcon className="h-3.5 w-3.5" />
+            <span>{i18nService.t('coworkActivityViewCodeChange')}</span>
+          </button>
+        )}
+      </div>
       {isExpanded && (
         <div className="ml-4 mt-2">
           {isBashTool ? (
@@ -856,12 +908,23 @@ const ToolCallGroup: React.FC<{
             // Diff view for Edit/MultiEdit tools
             <div className="space-y-2">
               {diffDataList.map((diff, idx) => (
-                <DiffView
-                  key={idx}
-                  oldStr={diff.oldStr}
-                  newStr={diff.newStr}
-                  filePath={diff.filePath}
-                />
+                <div key={idx} className="space-y-1.5">
+                  {onOpenFileChange && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFileChange(fileChangeIds[idx] ?? firstFileChangeId)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-raised px-2.5 py-1.5 text-xs font-medium text-secondary transition-colors hover:bg-primary-muted hover:text-primary"
+                    >
+                      <DocumentIcon className="h-3.5 w-3.5" />
+                      {i18nService.t('coworkActivityViewCodeChange')}
+                    </button>
+                  )}
+                  <DiffView
+                    oldStr={diff.oldStr}
+                    newStr={diff.newStr}
+                    filePath={diff.filePath}
+                  />
+                </div>
               ))}
               {toolResult && (hasToolResultText || showNoDetailError) && (
                 <div>
@@ -1375,18 +1438,126 @@ const ThinkingBlock: React.FC<{
   );
 };
 
+const getTeamMetadataString = (metadata: CoworkMessageMetadata | undefined, key: string): string => {
+  const value = metadata?.[key];
+  return typeof value === 'string' ? value : '';
+};
+
+const getTeamMetadataNumber = (metadata: CoworkMessageMetadata | undefined, key: string): number | null => {
+  const value = metadata?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+};
+
+const formatTeamDuration = (durationMs: number | null): string => {
+  if (durationMs === null) return '';
+  if (durationMs < 1000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  return `${(durationMs / 1000).toFixed(1)}s`;
+};
+
+const TeamNoticeCard: React.FC<{
+  message: CoworkMessage;
+  mapDisplayText?: (value: string) => string;
+}> = ({ message, mapDisplayText }) => {
+  const teamName = getTeamMetadataString(message.metadata, 'teamName');
+  const content = mapDisplayText ? mapDisplayText(message.content) : message.content;
+  return (
+    <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-primary">
+        <UserGroupIcon className="h-4 w-4" />
+        <span>{teamName || i18nService.t('agentTeamTimeline')}</span>
+      </div>
+      {content.trim() && (
+        <div className="mt-1 text-xs text-secondary">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const TeamTurnCard: React.FC<{
+  message: CoworkMessage;
+  mapDisplayText?: (value: string) => string;
+}> = ({ message, mapDisplayText }) => {
+  const [expanded, setExpanded] = useState(false);
+  const metadata = message.metadata;
+  const memberName = getTeamMetadataString(metadata, 'memberName') || i18nService.t('agentTeamMember');
+  const memberRole = getTeamMetadataString(metadata, 'memberRole');
+  const engine = getTeamMetadataString(metadata, 'agentEngine') as CoworkAgentEngine | '';
+  const status = getTeamMetadataString(metadata, 'status');
+  const input = getTeamMetadataString(metadata, 'input');
+  const outputRaw = getTeamMetadataString(metadata, 'output');
+  const output = mapDisplayText ? mapDisplayText(outputRaw) : outputRaw;
+  const duration = formatTeamDuration(getTeamMetadataNumber(metadata, 'durationMs'));
+  const isRunning = status === 'running';
+
+  return (
+    <div className="rounded-xl border border-border bg-surface/70">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-3 px-3 py-2 text-left"
+      >
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
+          isRunning ? 'bg-primary/10 text-primary' : 'bg-emerald-500/10 text-emerald-600'
+        }`}>
+          {isRunning ? <QueueListIcon className="h-4 w-4" /> : <CheckIcon className="h-4 w-4" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-sm font-semibold text-foreground">{memberName}</span>
+            {memberRole && <span className="shrink-0 text-xs text-muted">· {memberRole}</span>}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted">
+            {engine && <span>{getAgentEngineLabel(engine)}</span>}
+            <span>{isRunning ? i18nService.t('agentTeamStepRunning') : i18nService.t('agentTeamStepCompleted')}</span>
+            {duration && <span>{duration}</span>}
+          </div>
+        </div>
+        <ChevronRightIcon className={`h-4 w-4 shrink-0 text-muted transition-transform ${expanded ? 'rotate-90' : ''}`} />
+      </button>
+      {expanded && (
+        <div className="border-t border-border px-3 py-3">
+          {input && (
+            <details className="mb-3">
+              <summary className="cursor-pointer text-xs font-medium text-secondary">
+                {i18nService.t('agentTeamStepInput')}
+              </summary>
+              <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-background px-3 py-2 text-xs text-secondary whitespace-pre-wrap">
+                {input}
+              </pre>
+            </details>
+          )}
+          {output ? (
+            <MarkdownContent
+              content={output}
+              className="prose dark:prose-invert max-w-none text-sm"
+            />
+          ) : (
+            <div className="text-xs text-muted">
+              {isRunning ? i18nService.t('agentTeamStepWaiting') : i18nService.t('agentTeamStepNoOutput')}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const AssistantTurnBlock: React.FC<{
   turn: ConversationTurn;
   resolveLocalFilePath?: (href: string, text: string) => string | null;
   mapDisplayText?: (value: string) => string;
   showTypingIndicator?: boolean;
   showCopyButtons?: boolean;
+  onOpenFileChange?: (fileChangeId: string) => void;
 }> = ({
   turn,
   resolveLocalFilePath,
   mapDisplayText,
   showTypingIndicator = false,
   showCopyButtons = true,
+  onOpenFileChange,
 }) => {
   const visibleAssistantItems = getVisibleAssistantItems(turn.assistantItems);
 
@@ -1473,6 +1644,24 @@ export const AssistantTurnBlock: React.FC<{
           <div className="flex-1 min-w-0 px-4 py-3 space-y-3">
             {visibleAssistantItems.map((item, index) => {
               if (item.type === 'assistant') {
+                if (item.message.metadata?.kind === 'team_turn') {
+                  return (
+                    <TeamTurnCard
+                      key={item.message.id}
+                      message={item.message}
+                      mapDisplayText={mapDisplayText}
+                    />
+                  );
+                }
+                if (item.message.metadata?.kind === 'team_notice') {
+                  return (
+                    <TeamNoticeCard
+                      key={item.message.id}
+                      message={item.message}
+                      mapDisplayText={mapDisplayText}
+                    />
+                  );
+                }
                 if (item.message.metadata?.isThinking) {
                   return (
                     <ThinkingBlock
@@ -1507,6 +1696,7 @@ export const AssistantTurnBlock: React.FC<{
                     group={item.group}
                     isLastInSequence={isLastInSequence}
                     mapDisplayText={mapDisplayText}
+                    onOpenFileChange={onOpenFileChange}
                   />
                 );
               }
@@ -1554,7 +1744,16 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const currentSession = useSelector((state: RootState) => state.cowork.currentSession);
   const isStreaming = useSelector((state: RootState) => state.cowork.isStreaming);
   const remoteManaged = useSelector((state: RootState) => state.cowork.remoteManaged);
+  const coworkConfig = useSelector((state: RootState) => state.cowork.config);
+  const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const currentSessionId = currentSession?.id;
+  const liveFileActivities = useSelector((state: RootState) => (
+    currentSessionId ? state.cowork.liveFileActivitiesBySession[currentSessionId] ?? [] : []
+  ));
+  const currentSessionStatus = currentSession?.status;
+  const isSessionRunning = isStreaming || currentSessionStatus === 'running';
+  const currentSessionTitle = currentSession?.title;
   const detailRootRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
@@ -1588,6 +1787,24 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [isExportingImage, setIsExportingImage] = useState(false);
   const [showExportOptions, setShowExportOptions] = useState(false);
+  const [sessionViewMode, setSessionViewMode] = useState<CoworkSessionViewModeType>(CoworkSessionViewMode.Chat);
+  const [isActivitySidebarOpen, setIsActivitySidebarOpen] = useState(false);
+  const [activitySidebarMode, setActivitySidebarMode] = useState<CoworkActivitySidebarModeType>(CoworkActivitySidebarMode.Overview);
+  const [selectedActivityFileChangeId, setSelectedActivityFileChangeId] = useState<string | null>(null);
+  const [selectedLiveFilePath, setSelectedLiveFilePath] = useState<string | null>(null);
+  const [activitySidebarOpenSource, setActivitySidebarOpenSource] = useState<ActivitySidebarOpenSourceType | null>(null);
+  const [dismissedActivityTurnId, setDismissedActivityTurnId] = useState<string | null>(null);
+  const [latestRuntimeCall, setLatestRuntimeCall] = useState<RuntimeCallRecord | null>(null);
+  const [activitySidebarWidth, setActivitySidebarWidth] = useState(() => (
+    parseStoredActivitySidebarWidth(
+      window.localStorage.getItem(ActivitySidebarResize.StorageKey),
+      window.innerWidth,
+    )
+  ));
+  const activitySidebarWidthRef = useRef(activitySidebarWidth);
+  const lastAutoOpenedFileChangeIdRef = useRef<string | null>(null);
+  const lastAutoOpenedFileActivityKeyRef = useRef<string | null>(null);
+  const activityAutoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Rename states
   const [isRenaming, setIsRenaming] = useState(false);
@@ -1597,15 +1814,113 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   // Reset rename value when session changes
   useEffect(() => {
-    if (!isRenaming && currentSession) {
-      setRenameValue(currentSession.title);
+    if (!isRenaming && currentSessionTitle !== undefined) {
+      setRenameValue(currentSessionTitle);
       ignoreNextBlurRef.current = false;
     }
-  }, [isRenaming, currentSession?.title]);
+  }, [isRenaming, currentSessionTitle]);
 
   useEffect(() => {
     setShouldAutoScroll(true);
-  }, [currentSession?.id]);
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    setDismissedActivityTurnId(null);
+    setSessionViewMode(CoworkSessionViewMode.Chat);
+    setIsActivitySidebarOpen(false);
+    setActivitySidebarMode(CoworkActivitySidebarMode.Overview);
+    setSelectedActivityFileChangeId(null);
+    setSelectedLiveFilePath(null);
+    setLatestRuntimeCall(null);
+    setActivitySidebarOpenSource(null);
+    lastAutoOpenedFileChangeIdRef.current = null;
+    lastAutoOpenedFileActivityKeyRef.current = null;
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+      activityAutoCloseTimerRef.current = null;
+    }
+  }, [currentSessionId]);
+
+  const setClampedActivitySidebarWidth = useCallback((nextWidth: number) => {
+    const clampedWidth = clampActivitySidebarWidth(nextWidth, window.innerWidth);
+    activitySidebarWidthRef.current = clampedWidth;
+    setActivitySidebarWidth(clampedWidth);
+    return clampedWidth;
+  }, []);
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      const clampedWidth = setClampedActivitySidebarWidth(activitySidebarWidthRef.current);
+      window.localStorage.setItem(ActivitySidebarResize.StorageKey, String(clampedWidth));
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => {
+      window.removeEventListener('resize', handleWindowResize);
+    };
+  }, [setClampedActivitySidebarWidth]);
+
+  const handleActivitySidebarResizeStart = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+
+    const startX = event.clientX;
+    const startWidth = activitySidebarWidthRef.current;
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      setClampedActivitySidebarWidth(startWidth + startX - moveEvent.clientX);
+    };
+
+    const cleanup = () => {
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+      window.localStorage.setItem(ActivitySidebarResize.StorageKey, String(activitySidebarWidthRef.current));
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', cleanup, { once: true });
+    window.addEventListener('pointercancel', cleanup, { once: true });
+  }, [setClampedActivitySidebarWidth]);
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      setLatestRuntimeCall(null);
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const loadLatestRuntimeCall = async () => {
+      const result = await coworkService.listRuntimeCalls({
+        sessionId: currentSessionId,
+        limit: 1,
+      });
+      if (cancelled) return;
+      setLatestRuntimeCall(result.calls[0] ?? null);
+    };
+
+    void loadLatestRuntimeCall();
+
+    if (isSessionRunning) {
+      timer = window.setInterval(() => {
+        void loadLatestRuntimeCall();
+      }, 1500);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [currentSessionId, isSessionRunning]);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -1620,6 +1935,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   useEffect(() => {
     return () => {
       if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
+      if (activityAutoCloseTimerRef.current) clearTimeout(activityAutoCloseTimerRef.current);
     };
   }, []);
 
@@ -2167,6 +2483,74 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     return value;
   }, []);
 
+  const getEngineLabel = useCallback((): string => {
+    if (currentSession?.runtimeSnapshot?.agentEngine) {
+      switch (currentSession.runtimeSnapshot.agentEngine) {
+        case CoworkAgentEngine.ClaudeCode:
+          return i18nService.t('coworkAgentEngineClaudeCode');
+        case CoworkAgentEngine.Codex:
+          return i18nService.t('coworkAgentEngineCodex');
+        case CoworkAgentEngine.CodexApp:
+          return i18nService.t('coworkAgentEngineCodexApp');
+        case CoworkAgentEngine.OpenCode:
+          return i18nService.t('coworkAgentEngineOpenCode');
+        case CoworkAgentEngine.GrokBuild:
+          return i18nService.t('coworkAgentEngineGrokBuild');
+        case CoworkAgentEngine.QwenCode:
+          return i18nService.t('coworkAgentEngineQwenCode');
+        case CoworkAgentEngine.DeepSeekTui:
+          return i18nService.t('coworkAgentEngineDeepSeekTui');
+        case CoworkAgentEngine.OpenClaw:
+          return i18nService.t('coworkAgentEngineOpenClaw');
+        case CoworkAgentEngine.Hermes:
+          return i18nService.t('coworkAgentEngineHermes');
+        case CoworkAgentEngine.YdCowork:
+        default:
+          return i18nService.t('coworkAgentEngineClaudeLegacy');
+      }
+    }
+    switch (coworkConfig.agentEngine) {
+      case CoworkAgentEngine.ClaudeCode:
+        return i18nService.t('coworkAgentEngineClaudeCode');
+      case CoworkAgentEngine.Codex:
+        return i18nService.t('coworkAgentEngineCodex');
+      case CoworkAgentEngine.CodexApp:
+        return i18nService.t('coworkAgentEngineCodexApp');
+      case CoworkAgentEngine.OpenCode:
+        return i18nService.t('coworkAgentEngineOpenCode');
+      case CoworkAgentEngine.GrokBuild:
+        return i18nService.t('coworkAgentEngineGrokBuild');
+      case CoworkAgentEngine.QwenCode:
+        return i18nService.t('coworkAgentEngineQwenCode');
+      case CoworkAgentEngine.DeepSeekTui:
+        return i18nService.t('coworkAgentEngineDeepSeekTui');
+      case CoworkAgentEngine.OpenClaw:
+        return i18nService.t('coworkAgentEngineOpenClaw');
+      case CoworkAgentEngine.Hermes:
+        return i18nService.t('coworkAgentEngineHermes');
+      case CoworkAgentEngine.YdCowork:
+      default:
+        return i18nService.t('coworkAgentEngineClaudeLegacy');
+    }
+  }, [coworkConfig.agentEngine, currentSession?.runtimeSnapshot?.agentEngine]);
+
+  const lockedRuntimeSnapshot = useMemo(() => currentSession?.runtimeSnapshot ?? {
+    agentEngine: coworkConfig.agentEngine,
+    engineLabel: getEngineLabel(),
+    providerKey: null,
+    providerName: null,
+    modelId: null,
+    modelName: null,
+    modelLabel: i18nService.t('coworkRuntimeLockedUnknownModel'),
+    configSource: null,
+    capturedAt: currentSession?.createdAt ?? Date.now(),
+  }, [
+    coworkConfig.agentEngine,
+    currentSession?.createdAt,
+    currentSession?.runtimeSnapshot,
+    getEngineLabel,
+  ]);
+
   const handleReEdit = useCallback((message: CoworkMessage) => {
     const ref = promptInputRef.current;
     if (!ref) return;
@@ -2187,6 +2571,204 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   }, [dispatch]);
 
   const messages = currentSession?.messages;
+  const lastUserMessage = useMemo(() => {
+    if (!messages?.length) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].type === 'user') {
+        return messages[index];
+      }
+    }
+    return null;
+  }, [messages]);
+  const lastUserMessageId = lastUserMessage?.id ?? null;
+  const lastUserMessageTimestamp = lastUserMessage?.timestamp ?? 0;
+  const activitySnapshot = useMemo(
+    () => currentSession ? buildCoworkActivitySnapshot(currentSession, skills) : null,
+    [currentSession, skills],
+  );
+  const preferredActivityFileChangeId = useMemo(
+    () => activitySnapshot ? getPreferredActivityFileChangeId(activitySnapshot) : null,
+    [activitySnapshot],
+  );
+  const preferredActivityFileChange = useMemo(() => {
+    if (!activitySnapshot || !preferredActivityFileChangeId) return null;
+    return activitySnapshot.fileChanges.find((change) => change.id === preferredActivityFileChangeId) ?? null;
+  }, [activitySnapshot, preferredActivityFileChangeId]);
+  const visibleLiveFileActivities = useMemo(
+    () => liveFileActivities.filter((activity) => activity.status !== CoworkFileActivityStatus.Deleted),
+    [liveFileActivities],
+  );
+  const latestLiveFileActivity = visibleLiveFileActivities[0] ?? null;
+  const studioSnapshot = useMemo(() => {
+    if (!currentSession || !activitySnapshot) return null;
+    return buildCoworkStudioSnapshot({
+      session: currentSession,
+      activitySnapshot,
+      liveFileActivities: visibleLiveFileActivities,
+      runtimeCall: latestRuntimeCall,
+      config: coworkConfig,
+      selectedModel,
+      engineLabel: getEngineLabel(),
+      configSourceLocalCliLabel: i18nService.t('coworkStudioConfigSourceLocalCli'),
+      configSourceWesightLabel: i18nService.t('coworkStudioConfigSourceWesight'),
+      idleDetail: i18nService.t('coworkStudioStateIdle'),
+      runningDetail: i18nService.t('coworkStudioStateRunning'),
+      writingDetail: i18nService.t('coworkStudioStateWriting'),
+      researchingDetail: i18nService.t('coworkStudioStateResearching'),
+      executingDetail: i18nService.t('coworkStudioStateExecuting'),
+      syncingDetail: i18nService.t('coworkStudioStateSyncing'),
+      errorDetail: i18nService.t('coworkStudioStateError'),
+    });
+  }, [
+    activitySnapshot,
+    coworkConfig,
+    currentSession,
+    getEngineLabel,
+    latestRuntimeCall,
+    selectedModel,
+    visibleLiveFileActivities,
+  ]);
+
+  useEffect(() => {
+    if (!selectedLiveFilePath) return;
+    if (visibleLiveFileActivities.some((activity) => activity.filePath === selectedLiveFilePath)) return;
+    setSelectedLiveFilePath(visibleLiveFileActivities[0]?.filePath ?? null);
+  }, [selectedLiveFilePath, visibleLiveFileActivities]);
+
+  useEffect(() => {
+    if (!activitySnapshot?.fileChanges.length) {
+      setSelectedActivityFileChangeId(null);
+      return;
+    }
+    setSelectedActivityFileChangeId((current) => {
+      if (current && activitySnapshot.fileChanges.some((change) => change.id === current)) {
+        return current;
+      }
+      return preferredActivityFileChangeId;
+    });
+  }, [activitySnapshot, preferredActivityFileChangeId]);
+
+  useEffect(() => {
+    if (!currentSession || !isSessionRunning || !lastUserMessageId || !preferredActivityFileChangeId) return;
+    if (preferredActivityFileChange && preferredActivityFileChange.timestamp < lastUserMessageTimestamp) return;
+    if (dismissedActivityTurnId === lastUserMessageId) return;
+    if (lastAutoOpenedFileChangeIdRef.current === preferredActivityFileChangeId && isActivitySidebarOpen) return;
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+      activityAutoCloseTimerRef.current = null;
+    }
+    lastAutoOpenedFileChangeIdRef.current = preferredActivityFileChangeId;
+    setSelectedActivityFileChangeId(preferredActivityFileChangeId);
+    setActivitySidebarMode(CoworkActivitySidebarMode.CodeDiff);
+    setActivitySidebarOpenSource(ActivitySidebarOpenSource.AutoCodeChange);
+    setIsActivitySidebarOpen(true);
+  }, [
+    currentSession,
+    dismissedActivityTurnId,
+    isActivitySidebarOpen,
+    isSessionRunning,
+    lastUserMessageId,
+    lastUserMessageTimestamp,
+    preferredActivityFileChange,
+    preferredActivityFileChangeId,
+  ]);
+
+  useEffect(() => {
+    if (!currentSession || !isSessionRunning || !lastUserMessageId || !latestLiveFileActivity) return;
+    if (latestLiveFileActivity.timestamp < lastUserMessageTimestamp) return;
+    if (dismissedActivityTurnId === lastUserMessageId) return;
+    if (activitySidebarOpenSource === ActivitySidebarOpenSource.DiffClick && isActivitySidebarOpen) return;
+
+    const activityKey = `${latestLiveFileActivity.filePath}:${latestLiveFileActivity.timestamp}:${latestLiveFileActivity.source}`;
+    if (lastAutoOpenedFileActivityKeyRef.current === activityKey && isActivitySidebarOpen) return;
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+      activityAutoCloseTimerRef.current = null;
+    }
+    lastAutoOpenedFileActivityKeyRef.current = activityKey;
+    setSelectedLiveFilePath(latestLiveFileActivity.filePath);
+    setActivitySidebarMode(CoworkActivitySidebarMode.LiveCode);
+    setActivitySidebarOpenSource(ActivitySidebarOpenSource.LiveFile);
+    setIsActivitySidebarOpen(true);
+  }, [
+    activitySidebarOpenSource,
+    currentSession,
+    dismissedActivityTurnId,
+    isActivitySidebarOpen,
+    isSessionRunning,
+    lastUserMessageId,
+    lastUserMessageTimestamp,
+    latestLiveFileActivity,
+  ]);
+
+  useEffect(() => {
+    if (isSessionRunning) return;
+    const shouldAutoClose = activitySidebarOpenSource === ActivitySidebarOpenSource.AutoCodeChange
+      || activitySidebarOpenSource === ActivitySidebarOpenSource.LiveFile;
+    if (!isActivitySidebarOpen || !shouldAutoClose) return;
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+    }
+    activityAutoCloseTimerRef.current = setTimeout(() => {
+      setIsActivitySidebarOpen(false);
+      setActivitySidebarOpenSource(null);
+      activityAutoCloseTimerRef.current = null;
+    }, 1200);
+    return () => {
+      if (activityAutoCloseTimerRef.current) {
+        clearTimeout(activityAutoCloseTimerRef.current);
+        activityAutoCloseTimerRef.current = null;
+      }
+    };
+  }, [activitySidebarOpenSource, isActivitySidebarOpen, isSessionRunning]);
+
+  const handleOpenActivitySidebar = useCallback(() => {
+    setDismissedActivityTurnId(null);
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+      activityAutoCloseTimerRef.current = null;
+    }
+    setActivitySidebarMode(CoworkActivitySidebarMode.Overview);
+    setActivitySidebarOpenSource(ActivitySidebarOpenSource.ManualOpen);
+    setIsActivitySidebarOpen(true);
+  }, []);
+
+  const handleCloseActivitySidebar = useCallback(() => {
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+      activityAutoCloseTimerRef.current = null;
+    }
+    setDismissedActivityTurnId(lastUserMessageId ?? currentSession?.id ?? null);
+    setActivitySidebarOpenSource(null);
+    setIsActivitySidebarOpen(false);
+  }, [currentSession?.id, lastUserMessageId]);
+
+  const handleSelectActivityFileChange = useCallback((fileChangeId: string) => {
+    setSelectedActivityFileChangeId(fileChangeId);
+  }, []);
+
+  const handleSelectLiveFile = useCallback((filePath: string) => {
+    setSelectedLiveFilePath(filePath);
+    setActivitySidebarOpenSource(ActivitySidebarOpenSource.ManualOpen);
+  }, []);
+
+  const handleActivityModeChange = useCallback((mode: CoworkActivitySidebarModeType) => {
+    setActivitySidebarMode(mode);
+    setActivitySidebarOpenSource(ActivitySidebarOpenSource.ManualOpen);
+  }, []);
+
+  const handleOpenActivityFileChange = useCallback((fileChangeId: string) => {
+    if (activityAutoCloseTimerRef.current) {
+      clearTimeout(activityAutoCloseTimerRef.current);
+      activityAutoCloseTimerRef.current = null;
+    }
+    setDismissedActivityTurnId(null);
+    setSelectedActivityFileChangeId(fileChangeId);
+    setActivitySidebarMode(CoworkActivitySidebarMode.CodeDiff);
+    setActivitySidebarOpenSource(ActivitySidebarOpenSource.DiffClick);
+    setIsActivitySidebarOpen(true);
+  }, []);
+
   const displayItems = useMemo(() => messages ? buildDisplayItems(messages) : [], [messages]);
   const turns = useMemo(() => buildConversationTurns(displayItems), [displayItems]);
 
@@ -2272,6 +2854,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             resolveLocalFilePath={resolveLocalFilePath}
             showTypingIndicator
             showCopyButtons={!isStreaming}
+            onOpenFileChange={handleOpenActivityFileChange}
           />
         </div>
       );
@@ -2309,6 +2892,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 mapDisplayText={mapDisplayText}
                 showTypingIndicator={showTypingIndicator}
                 showCopyButtons={!isStreaming}
+                onOpenFileChange={handleOpenActivityFileChange}
               />
             </div>
           )}
@@ -2342,6 +2926,30 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               {updateBadge}
             </div>
           )}
+          <div className="non-draggable flex shrink-0 items-center rounded-full bg-surface-raised p-0.5">
+            <button
+              type="button"
+              onClick={() => setSessionViewMode(CoworkSessionViewMode.Chat)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                sessionViewMode === CoworkSessionViewMode.Chat
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-secondary hover:text-foreground'
+              }`}
+            >
+              {i18nService.t('coworkStudioTabChat')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSessionViewMode(CoworkSessionViewMode.Studio)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                sessionViewMode === CoworkSessionViewMode.Studio
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-secondary hover:text-foreground'
+              }`}
+            >
+              {i18nService.t('coworkStudioTabStudio')}
+            </button>
+          </div>
           {isRenaming ? (
             <input
               ref={renameInputRef}
@@ -2368,7 +2976,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
         {/* Right side: Folder + Menu */}
         <div className="non-draggable flex items-center gap-1">
-          {!remoteManaged && <CoworkEngineSelector />}
           {/* Folder button */}
           <button
             type="button"
@@ -2535,28 +3142,39 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             </div>
         </Modal>
       )}
-      <div className="relative flex-1 min-h-0">
-        <div
-          ref={scrollContainerRef}
-          onScroll={handleMessagesScroll}
-          className={`h-full min-h-0 overflow-y-auto pt-3 ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'}`}
-        >
-          {renderConversationTurns()}
-          <div className="h-20" />
-        </div>
+      <div className="relative flex flex-1 min-h-0 overflow-hidden">
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          <div className="relative flex-1 min-h-0">
+            {sessionViewMode === CoworkSessionViewMode.Studio && studioSnapshot ? (
+              <CoworkStudioView
+                snapshot={studioSnapshot}
+                messages={currentSession.messages}
+                isStreaming={isStreaming}
+                resolveLocalFilePath={resolveLocalFilePath}
+              />
+            ) : (
+              <>
+                <div
+                  ref={scrollContainerRef}
+                  onScroll={handleMessagesScroll}
+                  className={`h-full min-h-0 overflow-y-auto pt-3 ${turns.length > 1 && isScrollable ? 'pr-8' : 'pr-3'}`}
+                >
+                  {renderConversationTurns()}
+                  <div className="h-20" />
+                </div>
 
-        {/* Turn Navigation Rail — to the left of scrollbar */}
-        {turns.length > 1 && isScrollable && (
-          <div
-            className="absolute right-[18px] top-1/2 -translate-y-1/2 w-5 flex flex-col items-end z-10"
-            style={{ maxHeight: 'calc(100% - 40px)' }}
-            onMouseEnter={() => setIsRailHovered(true)}
-            onMouseLeave={() => {
-              setIsRailHovered(false);
-              setHoveredRailIndex(null);
-              setRailTooltip(null);
-            }}
-          >
+                {/* Turn Navigation Rail — to the left of scrollbar */}
+                {turns.length > 1 && isScrollable && (
+              <div
+                className="absolute right-[18px] top-1/2 -translate-y-1/2 w-5 flex flex-col items-end z-10"
+                style={{ maxHeight: 'calc(100% - 40px)' }}
+                onMouseEnter={() => setIsRailHovered(true)}
+                onMouseLeave={() => {
+                  setIsRailHovered(false);
+                  setHoveredRailIndex(null);
+                  setRailTooltip(null);
+                }}
+              >
             {/* Up Arrow */}
             <button
               type="button"
@@ -2751,10 +3369,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           </div>,
           document.body
         )}
+              </>
+            )}
       </div>
 
       {/* Streaming Activity Bar */}
-      {isStreaming && <StreamingActivityBar messages={currentSession.messages} />}
+      {sessionViewMode === CoworkSessionViewMode.Chat && isStreaming && <StreamingActivityBar messages={currentSession.messages} />}
 
       {/* Input Area */}
       <div className="p-4 shrink-0">
@@ -2771,12 +3391,70 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             remoteManaged={remoteManaged}
             onManageSkills={remoteManaged ? undefined : onManageSkills}
             showModelSelector={!remoteManaged}
+            lockedRuntimeSnapshot={lockedRuntimeSnapshot}
             sessionId={currentSession?.id}
           />
         </div>
         <p className="text-center text-[11px] text-muted opacity-85 mt-2 mb-[-8px] select-none">
           {i18nService.t('aiGeneratedDisclaimer')}
         </p>
+      </div>
+        </div>
+
+        {sessionViewMode === CoworkSessionViewMode.Chat && activitySnapshot && !isActivitySidebarOpen && (
+          <button
+            type="button"
+            onClick={handleOpenActivitySidebar}
+            className="absolute right-4 top-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-surface text-secondary shadow-sm transition-colors hover:bg-surface-raised hover:text-foreground"
+            aria-label={i18nService.t('coworkActivityOpen')}
+            title={i18nService.t('coworkActivityOpen')}
+          >
+            <QueueListIcon className="h-4 w-4" />
+          </button>
+        )}
+
+        {sessionViewMode === CoworkSessionViewMode.Chat && activitySnapshot && isActivitySidebarOpen && (
+          <div className="hidden h-full lg:block">
+            <CoworkActivitySidebar
+              snapshot={activitySnapshot}
+              sessionStatus={currentSession.status}
+              engineLabel={getEngineLabel()}
+              cwd={currentSession.cwd}
+              mode={activitySidebarMode}
+              selectedFileChangeId={selectedActivityFileChangeId}
+              liveFileActivities={liveFileActivities}
+              selectedLiveFilePath={selectedLiveFilePath}
+              runtimeCall={latestRuntimeCall}
+              width={activitySidebarWidth}
+              onModeChange={handleActivityModeChange}
+              onSelectFileChange={handleSelectActivityFileChange}
+              onSelectLiveFile={handleSelectLiveFile}
+              onResizeStart={handleActivitySidebarResizeStart}
+              onClose={handleCloseActivitySidebar}
+            />
+          </div>
+        )}
+
+        {sessionViewMode === CoworkSessionViewMode.Chat && activitySnapshot && isActivitySidebarOpen && (
+          <div className="absolute inset-0 z-40 flex justify-end bg-black/20 lg:hidden">
+            <CoworkActivitySidebar
+              snapshot={activitySnapshot}
+              sessionStatus={currentSession.status}
+              engineLabel={getEngineLabel()}
+              cwd={currentSession.cwd}
+              mode={activitySidebarMode}
+              selectedFileChangeId={selectedActivityFileChangeId}
+              liveFileActivities={liveFileActivities}
+              selectedLiveFilePath={selectedLiveFilePath}
+              runtimeCall={latestRuntimeCall}
+              overlay
+              onModeChange={handleActivityModeChange}
+              onSelectFileChange={handleSelectActivityFileChange}
+              onSelectLiveFile={handleSelectLiveFile}
+              onClose={handleCloseActivitySidebar}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

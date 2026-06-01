@@ -1,6 +1,7 @@
 import { ExclamationTriangleIcon,PhotoIcon } from '@heroicons/react/24/outline';
 import { FolderIcon,PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid';
 import { CoworkAgentEngine } from '@shared/cowork/constants';
+import type { CoworkSessionRuntimeSnapshot } from '@shared/cowork/runtimeSnapshot';
 import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
@@ -15,6 +16,7 @@ import { getCompactFolderName } from '../../utils/path';
 import PaperClipIcon from '../icons/PaperClipIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import { ActiveSkillBadge,SkillsButton } from '../skills';
+import CoworkEngineSelector from './CoworkEngineSelector';
 import CoworkModelSelector from './CoworkModelSelector';
 import FolderSelectorPopover from './FolderSelectorPopover';
 
@@ -62,6 +64,8 @@ const getSlashCommandsForEngine = (engine: CoworkAgentEngine | undefined): Slash
   if (
     engine === CoworkAgentEngine.ClaudeCode
     || engine === CoworkAgentEngine.Codex
+    || engine === CoworkAgentEngine.CodexApp
+    || engine === CoworkAgentEngine.GrokBuild
     || engine === CoworkAgentEngine.QwenCode
     || engine === CoworkAgentEngine.DeepSeekTui
   ) {
@@ -174,7 +178,12 @@ interface CoworkPromptInputProps {
   workingDirectory?: string;
   onWorkingDirectoryChange?: (dir: string) => void;
   showFolderSelector?: boolean;
+  showEngineSelector?: boolean;
+  engineSelectorReadOnly?: boolean;
+  effectiveEngine?: CoworkAgentEngine;
   showModelSelector?: boolean;
+  modelSelectorReadOnly?: boolean;
+  lockedRuntimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   onManageSkills?: () => void;
   onSlashCommand?: CoworkSlashCommandHandler;
   sessionId?: string;
@@ -194,7 +203,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       workingDirectory = '',
       onWorkingDirectoryChange,
       showFolderSelector = false,
+      showEngineSelector = false,
+      engineSelectorReadOnly = false,
+      effectiveEngine,
       showModelSelector = false,
+      modelSelectorReadOnly = false,
+      lockedRuntimeSnapshot = null,
       onManageSkills,
       onSlashCommand,
       sessionId,
@@ -205,6 +219,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const draftPrompt = useSelector((state: RootState) => state.cowork.draftPrompts[draftKey] || '');
     const attachments = useSelector((state: RootState) => state.cowork.draftAttachments[draftKey] || []) as CoworkAttachment[];
     const agentEngine = useSelector((state: RootState) => state.cowork.config.agentEngine);
+    const selectorEngine = effectiveEngine ?? agentEngine;
     const [value, setValue] = useState(draftPrompt);
     const [showFolderMenu, setShowFolderMenu] = useState(false);
     const [showFolderRequiredWarning, setShowFolderRequiredWarning] = useState(false);
@@ -796,6 +811,47 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const enhancedContainerClass = isDraggingFiles
     ? `${containerClass} ring-2 ring-primary/50 border-primary/60`
     : containerClass;
+  const runtimeLocked = Boolean(lockedRuntimeSnapshot);
+  const lockedEngineLabel = lockedRuntimeSnapshot?.engineLabel || i18nService.t('coworkRuntimeLocked');
+  const lockedModelLabel = lockedRuntimeSnapshot?.modelLabel
+    || lockedRuntimeSnapshot?.modelName
+    || lockedRuntimeSnapshot?.modelId
+    || i18nService.t('coworkAgentLocalModelUnknown');
+  const renderRuntimeSelectors = () => {
+    if (remoteManaged) return null;
+    if (runtimeLocked) {
+      return (
+        <div
+          className="flex min-w-0 items-center gap-1.5 rounded-xl border border-border bg-surface px-2.5 py-1.5 text-xs text-foreground"
+          title={i18nService.t('coworkRuntimeLockedTooltip')
+            .replace('{engine}', lockedEngineLabel)
+            .replace('{model}', lockedModelLabel)}
+        >
+          <span className="max-w-[120px] truncate font-medium">{lockedEngineLabel}</span>
+          <span className="text-muted">·</span>
+          <span className="max-w-[160px] truncate text-secondary">{lockedModelLabel}</span>
+        </div>
+      );
+    }
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        {showEngineSelector && (
+          <CoworkEngineSelector
+            dropdownDirection="up"
+            value={selectorEngine}
+            readOnly={engineSelectorReadOnly}
+            readOnlyTitle={i18nService.t('coworkAgentEngineReadOnly')}
+          />
+        )}
+        {showModelSelector && (
+          <CoworkModelSelector
+            dropdownDirection="up"
+            readOnly={modelSelectorReadOnly}
+          />
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="relative">
@@ -855,7 +911,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 agentEngine === CoworkAgentEngine.ClaudeCode
                   ? 'coworkSlashCommandsClaudeCode'
                   : agentEngine === CoworkAgentEngine.Codex
+                    || agentEngine === CoworkAgentEngine.CodexApp
                     ? 'coworkSlashCommandsCodex'
+                    : agentEngine === CoworkAgentEngine.GrokBuild
+                      ? 'coworkSlashCommandsGrokBuild'
                     : agentEngine === CoworkAgentEngine.QwenCode
                       ? 'coworkSlashCommandsQwenCode'
                       : agentEngine === CoworkAgentEngine.DeepSeekTui
@@ -961,7 +1020,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     )}
                   </>
                 )}
-                {showModelSelector && !remoteManaged && <CoworkModelSelector dropdownDirection="up" />}
                 {!remoteManaged && (
                   <button
                     type="button"
@@ -985,6 +1043,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 )}
               </div>
               <div className="flex items-center gap-2">
+                {renderRuntimeSelectors()}
                 {isStreaming ? (
                   <button
                     type="button"
@@ -1039,6 +1098,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                 </button>
               </div>
             )}
+
+            {renderRuntimeSelectors()}
 
             {isStreaming ? (
               <button

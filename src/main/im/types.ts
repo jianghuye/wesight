@@ -9,6 +9,8 @@ import {
   type FeishuImportSourceType,
   FeishuManagementMode,
   type FeishuManagementModeType,
+  FeishuRuntimeOwnership,
+  type FeishuRuntimeOwnershipType,
   type FeishuSecretStatusType,
 } from '../../shared/im/constants';
 import type { Platform } from '../../shared/platform';
@@ -139,6 +141,7 @@ export interface FeishuMultiInstanceStatus {
   openClawLocal?: FeishuOpenClawLocalStatus;
   profiles?: Partial<Record<FeishuEngineKeyType, FeishuProfileStatus>>;
   conflicts?: FeishuAppConflict[];
+  runtimeOwnership?: Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipStatus>>;
 }
 
 export interface FeishuProfileStatus {
@@ -161,6 +164,18 @@ export interface FeishuOpenClawLocalStatus {
   domain: string | null;
   appIdPreview: string | null;
   secretNeedsInput: boolean;
+  message: string | null;
+}
+
+export interface FeishuRuntimeOwnershipStatus {
+  engineKey: FeishuEngineKeyType;
+  ownership: FeishuRuntimeOwnershipType;
+  launchAgentInstalled: boolean;
+  launchAgentLoaded: boolean;
+  launchAgentLabel: string | null;
+  plistPath: string | null;
+  scriptPath: string | null;
+  configPath: string | null;
   message: string | null;
 }
 
@@ -441,6 +456,7 @@ export interface IMSettings {
   systemPrompt?: string;
   skillsEnabled: boolean;
   feishuManagementMode?: FeishuManagementModeType;
+  feishuOwnershipByEngine?: Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipType>>;
   /** Per-platform agent binding. Key = platform name, value = agent ID. Absent or 'main' = default. */
   platformAgentBindings?: Record<string, string>;
 }
@@ -727,6 +743,10 @@ export const DEFAULT_IM_SETTINGS: IMSettings = {
   systemPrompt: '',
   skillsEnabled: true,
   feishuManagementMode: FeishuManagementMode.LocalOpenClaw,
+  feishuOwnershipByEngine: {
+    [FeishuEngineKey.OpenClaw]: FeishuRuntimeOwnership.LocalRuntime,
+    [FeishuEngineKey.Hermes]: FeishuRuntimeOwnership.WesightManaged,
+  },
 };
 
 export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
@@ -839,6 +859,7 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
       secretNeedsInput: false,
       message: null,
     },
+    runtimeOwnership: {},
   },
   telegram: {
     connected: false,

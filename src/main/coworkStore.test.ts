@@ -38,13 +38,18 @@ function setupDb(): void {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       claude_session_id TEXT,
+      codex_app_thread_id TEXT,
       status TEXT NOT NULL DEFAULT 'idle',
       pinned INTEGER NOT NULL DEFAULT 0,
       cwd TEXT NOT NULL,
       system_prompt TEXT NOT NULL DEFAULT '',
       execution_mode TEXT NOT NULL DEFAULT 'local',
       active_skill_ids TEXT,
+      runtime_snapshot_json TEXT,
       agent_id TEXT NOT NULL DEFAULT 'main',
+      session_kind TEXT NOT NULL DEFAULT 'single',
+      parent_session_id TEXT,
+      team_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -90,8 +95,8 @@ function setupDb(): void {
 function insertSession(id: string): void {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO cowork_sessions (id, title, claude_session_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at)
-     VALUES (?, 'test', NULL, 'idle', 0, '/tmp', '', 'local', '[]', 'main', ?, ?)`,
+    `INSERT INTO cowork_sessions (id, title, claude_session_id, codex_app_thread_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, session_kind, parent_session_id, team_id, created_at, updated_at)
+     VALUES (?, 'test', NULL, NULL, 'idle', 0, '/tmp', '', 'local', '[]', 'main', 'single', NULL, NULL, ?, ?)`,
   ).run(id, now, now);
 }
 

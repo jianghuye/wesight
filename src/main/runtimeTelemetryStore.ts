@@ -304,6 +304,28 @@ export class RuntimeTelemetryStore {
       .run(status, completedAt, Math.max(0, completedAt - row.started_at), error ?? null, callId);
   }
 
+  resetRunningCalls(completedAt: number = Date.now()): number {
+    const result = this.db
+      .prepare(
+        `
+        UPDATE cowork_runtime_calls
+        SET status = ?,
+            completed_at = ?,
+            duration_ms = MAX(0, ? - started_at),
+            error = COALESCE(error, ?)
+        WHERE status = ?
+      `,
+      )
+      .run(
+        RuntimeCallStatus.Stopped,
+        completedAt,
+        completedAt,
+        'Stopped after app restart.',
+        RuntimeCallStatus.Running,
+      );
+    return result.changes;
+  }
+
   deleteBySession(sessionId: string): void {
     this.db.prepare('DELETE FROM cowork_runtime_calls WHERE session_id = ?').run(sessionId);
   }

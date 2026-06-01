@@ -4,6 +4,7 @@ import type {
   CoworkAgentEngine,
   RuntimeCallSource,
 } from '../../../shared/cowork/constants';
+import type { CoworkSessionRuntimeSnapshot } from '../../../shared/cowork/runtimeSnapshot';
 import type { CoworkMessage } from '../../coworkStore';
 
 export type { CoworkAgentEngine, RuntimeCallSource };
@@ -57,6 +58,8 @@ export type CoworkStartOptions = {
   confirmationMode?: 'modal' | 'text';
   imageAttachments?: CoworkImageAttachment[];
   agentId?: string;
+  agentEngine?: CoworkAgentEngine;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   runtimeSource?: RuntimeCallSource;
 };
 
@@ -64,6 +67,9 @@ export type CoworkContinueOptions = {
   systemPrompt?: string;
   skillIds?: string[];
   imageAttachments?: CoworkImageAttachment[];
+  agentId?: string;
+  agentEngine?: CoworkAgentEngine;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   runtimeSource?: RuntimeCallSource;
 };
 

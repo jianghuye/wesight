@@ -14,6 +14,11 @@ export const PetMood = {
   Focus: 'focus',
   Dragging: 'dragging',
   Walking: 'walking',
+  Thinking: 'thinking',
+  Working: 'working',
+  Coding: 'coding',
+  Done: 'done',
+  Error: 'error',
 } as const;
 
 export type PetMood = typeof PetMood[keyof typeof PetMood];
@@ -29,6 +34,15 @@ type PetPalette = {
 };
 
 const PET_PALETTES: Record<PetVariantType, PetPalette> = {
+  [PetVariant.WeSightAgent]: {
+    shell: '#fff0c5',
+    shellDark: '#f59e0b',
+    face: '#112925',
+    faceDark: '#071c19',
+    accent: '#facc15',
+    blush: '#22d3ee',
+    line: '#0b201c',
+  },
   [PetVariant.BlueBot]: {
     shell: '#4169e1',
     shellDark: '#1e3a8a',
@@ -148,6 +162,232 @@ const renderMouth = (palette: PetPalette, mood: PetMood) => {
   return <path d="M57 61 C60 64 65 64 68 61" fill="none" stroke={palette.accent} strokeWidth="3" strokeLinecap="round" />;
 };
 
+const renderWeSightExpression = (mood: PetMood) => {
+  if (mood === PetMood.Error) {
+    return (
+      <>
+        <path
+          className="pet-sprite__brand-expression"
+          d="M43 49 L53 58 M53 49 L43 58 M67 49 L77 58 M77 49 L67 58"
+          fill="none"
+          stroke="#f97316"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+        <path
+          d="M53 66 C58 62 65 62 70 66"
+          fill="none"
+          stroke="#facc15"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </>
+    );
+  }
+
+  if (mood === PetMood.Coding || mood === PetMood.Working) {
+    return (
+      <>
+        <rect className="pet-sprite__brand-expression" x="43" y="48" width="9" height="8" rx="2" fill="#facc15" />
+        <rect className="pet-sprite__brand-expression pet-sprite__brand-expression--right" x="68" y="48" width="9" height="8" rx="2" fill="#facc15" />
+        <path
+          d="M55 63 H66"
+          fill="none"
+          stroke="#67e8f9"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </>
+    );
+  }
+
+  if (mood === PetMood.Thinking) {
+    return (
+      <>
+        <circle className="pet-sprite__brand-expression" cx="45" cy="53" r="3.5" fill="#facc15" />
+        <circle className="pet-sprite__brand-expression" cx="60" cy="53" r="3.5" fill="#67e8f9" />
+        <circle className="pet-sprite__brand-expression pet-sprite__brand-expression--right" cx="75" cy="53" r="3.5" fill="#facc15" />
+      </>
+    );
+  }
+
+  if (mood === PetMood.Done) {
+    return (
+      <path
+        className="pet-sprite__brand-expression"
+        d="M42 54 C47 45 53 45 58 55 C63 66 73 62 80 50"
+        fill="none"
+        stroke="#facc15"
+        strokeWidth="4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    );
+  }
+
+  if (mood === PetMood.Focus) {
+    return (
+      <>
+        <path
+          className="pet-sprite__brand-expression"
+          d="M42 56 C48 49 54 49 59 56 C64 63 70 63 78 56"
+          fill="none"
+          stroke="#facc15"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          className="pet-sprite__brand-expression pet-sprite__brand-expression--right"
+          d="M42 48 H52 M68 48 H78"
+          fill="none"
+          stroke="#67e8f9"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </>
+    );
+  }
+
+  if (mood === PetMood.Happy) {
+    return (
+      <path
+        className="pet-sprite__brand-expression"
+        d="M39 54 C46 41 54 64 60 58 C66 64 74 41 81 54"
+        fill="none"
+        stroke="#facc15"
+        strokeWidth="4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    );
+  }
+
+  if (mood === PetMood.Dragging) {
+    return (
+      <path
+        className="pet-sprite__brand-expression"
+        d="M43 55 H53 M67 55 H77"
+        fill="none"
+        stroke="#facc15"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+    );
+  }
+
+  return (
+    <path
+      className="pet-sprite__brand-expression"
+      d="M40 54 C47 42 55 64 60 58 C65 64 73 42 80 54"
+      fill="none"
+      stroke="#facc15"
+      strokeWidth="4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  );
+};
+
+const WeSightAgentSprite: React.FC<{
+  motion: PetMotionType;
+  mood: PetMood;
+  size: number;
+  className: string;
+}> = ({ motion, mood, size, className }) => {
+  const spriteClassName = [
+    'pet-sprite',
+    'pet-sprite--wesight',
+    motion === PetMotion.Playful ? 'pet-sprite--playful' : '',
+    mood === PetMood.Happy ? 'pet-sprite--happy' : '',
+    mood === PetMood.Dragging ? 'pet-sprite--dragging' : '',
+    mood === PetMood.Walking ? 'pet-sprite--walking' : '',
+    mood === PetMood.Thinking ? 'pet-sprite--thinking' : '',
+    mood === PetMood.Working ? 'pet-sprite--working' : '',
+    mood === PetMood.Coding ? 'pet-sprite--coding' : '',
+    mood === PetMood.Done ? 'pet-sprite--done' : '',
+    mood === PetMood.Error ? 'pet-sprite--error' : '',
+    className,
+  ].filter(Boolean).join(' ');
+
+  return (
+    <svg
+      className={spriteClassName}
+      width={size}
+      height={size}
+      viewBox="0 0 120 140"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      shapeRendering="geometricPrecision"
+    >
+      <defs>
+        <radialGradient id="wesight-pet-face" cx="50%" cy="38%" r="70%">
+          <stop offset="0" stopColor="#203b35" />
+          <stop offset="1" stopColor="#071c19" />
+        </radialGradient>
+        <linearGradient id="wesight-pet-shell" x1="18" y1="24" x2="101" y2="82" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#fff7dc" />
+          <stop offset="0.62" stopColor="#ffe9b0" />
+          <stop offset="1" stopColor="#f3c977" />
+        </linearGradient>
+        <linearGradient id="wesight-pet-body" x1="34" y1="70" x2="88" y2="124" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#173d36" />
+          <stop offset="1" stopColor="#061c18" />
+        </linearGradient>
+        <radialGradient id="wesight-pet-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0" stopColor="#fffbe8" />
+          <stop offset="0.46" stopColor="#facc15" />
+          <stop offset="1" stopColor="#f97316" />
+        </radialGradient>
+      </defs>
+
+      <ellipse cx="60" cy="127" rx="32" ry="8" fill="rgba(15, 23, 42, 0.18)" />
+      <path d="M50 24 C52 12 68 12 70 24" fill="#f59e0b" stroke="#7c3d00" strokeWidth="2" />
+      <circle cx="19" cy="55" r="13" fill="#f59e0b" stroke="#7c3d00" strokeWidth="2" />
+      <circle cx="101" cy="55" r="13" fill="#f59e0b" stroke="#7c3d00" strokeWidth="2" />
+
+      <g className="pet-sprite__arm-left">
+        <path d="M35 82 C22 88 19 101 28 107" fill="none" stroke="#071c19" strokeWidth="7" strokeLinecap="round" />
+        <path d="M23 96 C20 101 22 108 28 110 C34 112 39 107 38 101 C34 103 28 101 23 96Z" fill="#fff0c5" stroke="#7c3d00" strokeWidth="2" />
+        <path d="M25 93 C29 99 35 101 39 99" fill="none" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" />
+      </g>
+      <g className="pet-sprite__arm-right">
+        <path d="M85 82 C98 88 101 101 92 107" fill="none" stroke="#071c19" strokeWidth="7" strokeLinecap="round" />
+        <path d="M97 96 C100 101 98 108 92 110 C86 112 81 107 82 101 C86 103 92 101 97 96Z" fill="#fff0c5" stroke="#7c3d00" strokeWidth="2" />
+        <path d="M95 93 C91 99 85 101 81 99" fill="none" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" />
+      </g>
+
+      <path d="M36 76 C39 62 81 62 84 76 C90 108 77 124 60 124 C43 124 30 108 36 76Z" fill="url(#wesight-pet-body)" stroke="#071c19" strokeWidth="3" />
+      <g className="pet-sprite__leg-left">
+        <path d="M36 116 C40 106 54 107 57 118 C53 127 36 128 31 121 C31 119 33 117 36 116Z" fill="#fff0c5" stroke="#7c3d00" strokeWidth="2" />
+        <path d="M32 121 C39 128 52 127 57 119" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" />
+      </g>
+      <g className="pet-sprite__leg-right">
+        <path d="M84 116 C80 106 66 107 63 118 C67 127 84 128 89 121 C89 119 87 117 84 116Z" fill="#fff0c5" stroke="#7c3d00" strokeWidth="2" />
+        <path d="M88 121 C81 128 68 127 63 119" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" />
+      </g>
+
+      <path d="M21 54 C21 34 37 23 60 23 C83 23 99 34 99 54 C99 75 80 86 60 86 C40 86 21 75 21 54Z" fill="url(#wesight-pet-shell)" stroke="#7c3d00" strokeWidth="2.5" />
+      <path d="M31 54 C31 39 43 32 60 32 C77 32 89 39 89 54 C89 69 75 76 60 76 C45 76 31 69 31 54Z" fill="url(#wesight-pet-face)" stroke="#071c19" strokeWidth="2.5" />
+      <path d="M60 32 V47" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" />
+      <circle cx="60" cy="52" r="9" fill="#183934" stroke="#31564f" strokeWidth="3" />
+      <circle className="pet-sprite__spark" cx="60" cy="52" r="5" fill="#67e8f9" />
+      {renderWeSightExpression(mood)}
+      <circle cx="35" cy="71" r="3" fill="#f59e0b" opacity="0.42" />
+      <circle cx="85" cy="71" r="3" fill="#f59e0b" opacity="0.42" />
+
+      <circle className="pet-sprite__brand-chest" cx="60" cy="91" r="12" fill="#fff0c5" stroke="#7c3d00" strokeWidth="2" />
+      <circle className="pet-sprite__brand-chest-glow" cx="60" cy="91" r="7" fill="url(#wesight-pet-glow)" />
+      {(mood === PetMood.Coding || mood === PetMood.Working) && (
+        <g className="pet-sprite__keyboard">
+          <rect x="36" y="105" width="48" height="15" rx="4" fill="#0f172a" stroke="#7c3d00" strokeWidth="2" />
+          <path d="M44 111 H48 M53 111 H57 M62 111 H66 M71 111 H75 M48 116 H72" stroke="#67e8f9" strokeWidth="1.7" strokeLinecap="round" opacity="0.86" />
+        </g>
+      )}
+    </svg>
+  );
+};
+
 const VariantAccessory: React.FC<{ variant: PetVariantType; palette: PetPalette }> = ({ variant, palette }) => {
   switch (variant) {
     case PetVariant.AquaDrop:
@@ -201,6 +441,17 @@ const PetSprite: React.FC<PetSpriteProps> = ({
   size = 128,
   className = '',
 }) => {
+  if (variant === PetVariant.WeSightAgent) {
+    return (
+      <WeSightAgentSprite
+        motion={motion}
+        mood={mood}
+        size={size}
+        className={className}
+      />
+    );
+  }
+
   const palette = PET_PALETTES[variant];
   const isDrop = variant === PetVariant.AquaDrop;
   const isWoodLike = variant === PetVariant.WoodBox || variant === PetVariant.SproutBox;
@@ -210,6 +461,11 @@ const PetSprite: React.FC<PetSpriteProps> = ({
     mood === PetMood.Happy ? 'pet-sprite--happy' : '',
     mood === PetMood.Dragging ? 'pet-sprite--dragging' : '',
     mood === PetMood.Walking ? 'pet-sprite--walking' : '',
+    mood === PetMood.Thinking ? 'pet-sprite--thinking' : '',
+    mood === PetMood.Working ? 'pet-sprite--working' : '',
+    mood === PetMood.Coding ? 'pet-sprite--coding' : '',
+    mood === PetMood.Done ? 'pet-sprite--done' : '',
+    mood === PetMood.Error ? 'pet-sprite--error' : '',
     className,
   ].filter(Boolean).join(' ');
 

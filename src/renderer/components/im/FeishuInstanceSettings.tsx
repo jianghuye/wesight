@@ -20,6 +20,7 @@ interface FeishuInstanceSettingsProps {
   agentEngine: CoworkAgentEngineType;
   isAgentEngineSupported: boolean;
   isLocalOpenClawOwned?: boolean;
+  readOnly?: boolean;
   enabledInstanceCount: number;
   onConfigChange: (update: Partial<FeishuOpenClawConfig>) => void;
   onSave: (override?: Partial<FeishuOpenClawConfig>) => Promise<void>;
@@ -138,6 +139,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   agentEngine,
   isAgentEngineSupported,
   isLocalOpenClawOwned = false,
+  readOnly = false,
   enabledInstanceCount,
   onConfigChange,
   onSave,
@@ -149,6 +151,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   connectivityResults,
   language,
 }) => {
+  const isReadOnly = readOnly || isLocalOpenClawOwned;
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [allowedUserIdInput, setAllowedUserIdInput] = useState('');
   const [groupAllowIdInput, setGroupAllowIdInput] = useState('');
@@ -175,7 +178,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   }, []);
 
   const handleStartQr = async () => {
-    if (!isAgentEngineSupported || hermesSingleInstanceBlocked) return;
+    if (isReadOnly || !isAgentEngineSupported || hermesSingleInstanceBlocked) return;
     if (qrPollTimerRef.current) clearInterval(qrPollTimerRef.current);
     if (qrCountdownTimerRef.current) clearInterval(qrCountdownTimerRef.current);
     setQrStatus('loading');
@@ -257,8 +260,8 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
   const hermesSingleInstanceBlocked = agentEngine === CoworkAgentEngine.Hermes
     && !instance.enabled
     && enabledInstanceCount > 0;
-  const enableDisabled = !instance.enabled
-    && (!(instance.appId && instance.appSecret) || !isAgentEngineSupported || hermesSingleInstanceBlocked || isLocalOpenClawOwned);
+  const enableDisabled = isReadOnly
+    || (!instance.enabled && (!(instance.appId && instance.appSecret) || !isAgentEngineSupported || hermesSingleInstanceBlocked));
   const enableTitle = instance.enabled
     ? i18nService.t('imFeishuDisableInstance')
     : !(instance.appId && instance.appSecret)
@@ -267,8 +270,8 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
         ? i18nService.t('imFeishuAgentEngineUnsupportedHint')
         : hermesSingleInstanceBlocked
           ? i18nService.t('imFeishuHermesSingleInstanceHint')
-          : isLocalOpenClawOwned
-            ? i18nService.t('imFeishuLocalOpenClawOwnerHint')
+          : isReadOnly
+            ? i18nService.t('imFeishuLocalRuntimeReadonlyHint')
             : i18nService.t('imFeishuEnableInstance');
 
   return (
@@ -291,9 +294,9 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             {i18nService.t('imFeishuHermesSingleInstanceHint')}
           </div>
         )}
-        {isLocalOpenClawOwned && (
+        {isReadOnly && (
           <div className="mt-1 text-secondary">
-            {i18nService.t('imFeishuLocalOpenClawOwnerHint')}
+            {i18nService.t('imFeishuLocalRuntimeReadonlyHint')}
           </div>
         )}
       </div>
@@ -319,13 +322,20 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
                 if (e.key === 'Escape') { setNameValue(instance.instanceName); setEditingName(false); }
               }}
               autoFocus
+              disabled={isReadOnly}
               className="text-sm font-medium text-foreground bg-transparent border-b border-primary focus:outline-none px-0 py-0"
             />
           ) : (
             <span
-              className="text-sm font-medium text-foreground cursor-pointer hover:text-primary transition-colors truncate border-b border-dashed border-gray-400 dark:border-secondary/50 hover:border-primary pb-px"
-              onClick={() => setEditingName(true)}
-              title={language === 'zh' ? '点击重命名' : 'Click to rename'}
+              className={`text-sm font-medium text-foreground transition-colors truncate pb-px ${
+                isReadOnly
+                  ? 'cursor-default'
+                  : 'cursor-pointer hover:text-primary border-b border-dashed border-gray-400 dark:border-secondary/50 hover:border-primary'
+              }`}
+              onClick={() => {
+                if (!isReadOnly) setEditingName(true);
+              }}
+              title={isReadOnly ? i18nService.t('imFeishuLocalRuntimeReadonlyHint') : (language === 'zh' ? '点击重命名' : 'Click to rename')}
             >
               {instance.instanceName}
             </span>
@@ -364,7 +374,8 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
         <button
           type="button"
           onClick={onDelete}
-          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0"
+          disabled={isReadOnly}
+          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
           title={language === 'zh' ? '删除此实例' : 'Delete this instance'}
         >
           <TrashIcon className="h-4 w-4" />
@@ -379,7 +390,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             <button
               type="button"
               onClick={() => void handleStartQr()}
-              disabled={!isAgentEngineSupported || hermesSingleInstanceBlocked}
+              disabled={isReadOnly || !isAgentEngineSupported || hermesSingleInstanceBlocked}
               className="px-4 py-2.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {i18nService.t('feishuBotCreateWizardScanBtn')}
@@ -451,6 +462,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             value={instance.appId}
             onChange={(e) => onConfigChange({ appId: e.target.value })}
             onBlur={() => void onSave()}
+            disabled={isReadOnly}
             className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-8 text-sm transition-colors"
             placeholder="cli_xxxxx"
           />
@@ -459,6 +471,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               <button
                 type="button"
                 onClick={() => { onConfigChange({ appId: '' }); void onSave({ appId: '' }); }}
+                disabled={isReadOnly}
                 className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
                 title={i18nService.t('clear') || 'Clear'}
               >
@@ -480,6 +493,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             value={instance.appSecret}
             onChange={(e) => onConfigChange({ appSecret: e.target.value })}
             onBlur={() => void onSave()}
+            disabled={isReadOnly}
             className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 pr-16 text-sm transition-colors"
             placeholder="••••••••••••"
           />
@@ -488,6 +502,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               <button
                 type="button"
                 onClick={() => { onConfigChange({ appSecret: '' }); void onSave({ appSecret: '' }); }}
+                disabled={isReadOnly}
                 className="p-0.5 rounded text-secondary hover:text-primary transition-colors"
                 title={i18nService.t('clear') || 'Clear'}
               >
@@ -513,6 +528,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
         </label>
         <select
           value={instance.domain}
+          disabled={isReadOnly}
           onChange={(e) => {
             const update = { domain: e.target.value };
             onConfigChange(update);
@@ -538,6 +554,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             </label>
             <select
               value={instance.dmPolicy}
+              disabled={isReadOnly}
               onChange={(e) => {
                 const update = { dmPolicy: e.target.value as FeishuOpenClawConfig['dmPolicy'] };
                 onConfigChange(update);
@@ -566,6 +583,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               <input
                 type="text"
                 value={allowedUserIdInput}
+                disabled={isReadOnly}
                 onChange={(e) => setAllowedUserIdInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -584,6 +602,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               />
               <button
                 type="button"
+                disabled={isReadOnly}
                 onClick={() => {
                   const id = allowedUserIdInput.trim();
                   if (id && !instance.allowFrom.includes(id)) {
@@ -608,6 +627,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
                     {id}
                     <button
                       type="button"
+                      disabled={isReadOnly}
                       onClick={() => {
                         const newIds = instance.allowFrom.filter((uid) => uid !== id);
                         onConfigChange({ allowFrom: newIds });
@@ -630,6 +650,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             </label>
             <select
               value={instance.groupPolicy}
+              disabled={isReadOnly}
               onChange={(e) => {
                 const update = { groupPolicy: e.target.value as FeishuOpenClawConfig['groupPolicy'] };
                 onConfigChange(update);
@@ -652,6 +673,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               <input
                 type="text"
                 value={groupAllowIdInput}
+                disabled={isReadOnly}
                 onChange={(e) => setGroupAllowIdInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -670,6 +692,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               />
               <button
                 type="button"
+                disabled={isReadOnly}
                 onClick={() => {
                   const id = groupAllowIdInput.trim();
                   if (id && !instance.groupAllowFrom.includes(id)) {
@@ -694,6 +717,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
                     {id}
                     <button
                       type="button"
+                      disabled={isReadOnly}
                       onClick={() => {
                         const newIds = instance.groupAllowFrom.filter((gid) => gid !== id);
                         onConfigChange({ groupAllowFrom: newIds });
@@ -716,6 +740,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
             </label>
             <select
               value={instance.replyMode}
+              disabled={isReadOnly}
               onChange={(e) => {
                 const update = { replyMode: e.target.value as FeishuOpenClawConfig['replyMode'] };
                 onConfigChange(update);
@@ -739,6 +764,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               value={instance.historyLimit}
               onChange={(e) => onConfigChange({ historyLimit: parseInt(e.target.value) || 50 })}
               onBlur={() => void onSave()}
+              disabled={isReadOnly}
               className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
               min="1"
               max="200"
@@ -755,6 +781,7 @@ const FeishuInstanceSettings: React.FC<FeishuInstanceSettingsProps> = ({
               value={instance.mediaMaxMb}
               onChange={(e) => onConfigChange({ mediaMaxMb: parseInt(e.target.value) || 30 })}
               onBlur={() => void onSave()}
+              disabled={isReadOnly}
               className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
               min="1"
               max="50"

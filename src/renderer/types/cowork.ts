@@ -1,10 +1,13 @@
 import type {
   CoworkAgentEngine,
+  CoworkSessionKind,
   DeepSeekTuiPermissionMode,
   ExternalAgentConfigSource,
   OpenCodePermissionMode,
   QwenCodePermissionMode,
 } from '@shared/cowork/constants';
+export type { CoworkFileActivity } from '@shared/cowork/fileActivity';
+import type { CoworkSessionRuntimeSnapshot } from '@shared/cowork/runtimeSnapshot';
 export type {
   RuntimeCallRecord,
   RuntimeMetricsDetailResult,
@@ -30,6 +33,7 @@ export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result
 // Cowork execution mode
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
 export type { CoworkAgentEngine, ExternalAgentConfigSource };
+export type { CoworkSessionKind };
 export type { DeepSeekTuiPermissionMode, OpenCodePermissionMode, QwenCodePermissionMode };
 
 // Cowork message metadata
@@ -62,6 +66,7 @@ export interface CoworkSession {
   id: string;
   title: string;
   claudeSessionId: string | null;
+  codexAppThreadId?: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
   cwd: string;
@@ -69,6 +74,10 @@ export interface CoworkSession {
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
+  sessionKind?: CoworkSessionKind;
+  parentSessionId?: string | null;
+  teamId?: string | null;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   messages: CoworkMessage[];
   createdAt: number;
   updatedAt: number;
@@ -199,9 +208,14 @@ export interface CoworkPermissionResponse {
 export interface CoworkSessionSummary {
   id: string;
   title: string;
+  codexAppThreadId?: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
   agentId?: string;
+  sessionKind?: CoworkSessionKind;
+  parentSessionId?: string | null;
+  teamId?: string | null;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -214,6 +228,7 @@ export interface CoworkStartOptions {
   title?: string;
   activeSkillIds?: string[];
   agentId?: string;
+  teamId?: string;
   imageAttachments?: CoworkImageAttachment[];
 }
 
@@ -245,7 +260,7 @@ export interface CoworkConfigResult {
   error?: string;
 }
 
-export type CliAppType = 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui';
+export type CliAppType = 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui';
 
 export interface CliAppConfigSnapshot {
   appType: CliAppType;
@@ -259,7 +274,7 @@ export interface CliAppConfigSnapshot {
 }
 
 export interface CliCommandStatus {
-  engine: Extract<CoworkAgentEngine, 'openclaw' | 'claude_code' | 'codex' | 'hermes' | 'opencode' | 'qwen_code' | 'deepseek_tui'>;
+  engine: Extract<CoworkAgentEngine, 'openclaw' | 'claude_code' | 'codex' | 'hermes' | 'opencode' | 'grok_build' | 'qwen_code' | 'deepseek_tui'>;
   appType: CliAppType;
   command: string;
   found: boolean;
@@ -283,9 +298,33 @@ export interface CcSwitchSnapshot {
 export interface ExternalAgentEnvironmentSnapshot {
   ccSwitch: CcSwitchSnapshot;
   engines: CliCommandStatus[];
+  codexApp?: CodexAppStatus;
 }
 
 export type ExternalAgentProviderAppType = CliAppType;
+
+export type CodexAppStatusPhase = 'missing' | 'ready' | 'starting' | 'error';
+
+export interface CodexAppStatus {
+  phase: CodexAppStatusPhase;
+  cliFound: boolean;
+  cliPath: string | null;
+  cliVersion: string | null;
+  appInstalled: boolean;
+  appPath: string | null;
+  appRunning: boolean;
+  socketPath: string | null;
+  appServerSupported: boolean;
+  message: string;
+  error?: string;
+}
+
+export interface CodexAppTaskSyncResult {
+  synced: number;
+  imported: number;
+  updated: number;
+  lastSyncAt: number;
+}
 
 export type ExternalAgentCliInstallPhase =
   | 'starting'

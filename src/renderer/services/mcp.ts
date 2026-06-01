@@ -1,4 +1,19 @@
-import { McpServerConfig, McpServerFormData, McpRegistryEntry, McpMarketplaceCategoryInfo, McpCategory, McpMarketplaceServer } from '../types/mcp';
+import {
+  McpCategory,
+  McpMarketplaceCategoryInfo,
+  McpMarketplaceServer,
+  McpRegistryEntry,
+  McpServerConfig,
+  McpServerFormData,
+} from '../types/mcp';
+
+const hasUsableMarketplaceData = (
+  data: { servers?: McpMarketplaceServer[]; categories?: McpMarketplaceCategoryInfo[] } | undefined,
+): data is { servers: McpMarketplaceServer[]; categories: McpMarketplaceCategoryInfo[] } => (
+  Array.isArray(data?.servers)
+  && data.servers.length > 0
+  && Array.isArray(data?.categories)
+);
 
 /**
  * Convert remote marketplace server data to McpRegistryEntry format.
@@ -122,7 +137,7 @@ class McpService {
   } | null> {
     try {
       const result = await window.electron.mcp.fetchMarketplace();
-      if (result.success && result.data) {
+      if (result.success && hasUsableMarketplaceData(result.data)) {
         const registry = convertMarketplaceToRegistry(result.data.servers);
         return { registry, categories: result.data.categories };
       }

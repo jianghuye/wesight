@@ -1,4 +1,5 @@
 export { ClaudeRuntimeAdapter } from './claudeRuntimeAdapter';
+export { CodexAppRuntimeAdapter } from './codexAppRuntimeAdapter';
 export { CoworkEngineRouter } from './coworkEngineRouter';
 export { DeepSeekTuiRuntimeAdapter } from './deepSeekTuiRuntimeAdapter';
 export { ExternalCliRuntimeAdapter } from './externalCliRuntimeAdapter';

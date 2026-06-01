@@ -22,13 +22,18 @@ const setupDb = (): void => {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       claude_session_id TEXT,
+      codex_app_thread_id TEXT,
       status TEXT NOT NULL DEFAULT 'idle',
       pinned INTEGER NOT NULL DEFAULT 0,
       cwd TEXT NOT NULL,
       system_prompt TEXT NOT NULL DEFAULT '',
       execution_mode TEXT,
       active_skill_ids TEXT,
+      runtime_snapshot_json TEXT,
       agent_id TEXT NOT NULL DEFAULT 'main',
+      session_kind TEXT NOT NULL DEFAULT 'single',
+      parent_session_id TEXT,
+      team_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -211,6 +216,37 @@ test('uses runtime-correlated highspeed GLM estimates within the model range', (
   expect(calculateModelTps(fastCall)).toBeGreaterThan(calculateModelTps(slowCall) ?? 0);
   expect(calculateModelTps(fastCall)).toBeLessThanOrEqual(350);
   expect(calculateModelTps(slowCall)).toBeGreaterThanOrEqual(300);
+});
+
+test('resets running runtime calls after app restart', () => {
+  const startedAt = Date.now() - 10_000;
+  const completedAt = startedAt + 9000;
+  store.createCall({
+    id: 'call-running',
+    sessionId: 'session-1',
+    turnIndex: 1,
+    agentId: 'main',
+    source: RuntimeCallSource.Chat,
+    engine: CoworkAgentEngine.ClaudeCode,
+    providerKey: 'deepseek',
+    providerName: 'DeepSeek',
+    modelId: 'deepseek-v4-pro',
+    modelName: 'deepseek-v4-pro',
+    configSource: 'wesight_model',
+    cwd: '/tmp',
+    startedAt,
+    inputTokens: 10,
+    contextTokens: 10,
+    tokensEstimated: true,
+  });
+
+  expect(store.resetRunningCalls(completedAt)).toBe(1);
+
+  const call = store.listCalls().calls[0];
+  expect(call.status).toBe(RuntimeCallStatus.Stopped);
+  expect(call.completedAt).toBe(completedAt);
+  expect(call.durationMs).toBe(9000);
+  expect(call.error).toBe('Stopped after app restart.');
 });
 
 test('deletes runtime calls for removed sessions', () => {

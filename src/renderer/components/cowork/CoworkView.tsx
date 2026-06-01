@@ -1,5 +1,5 @@
 import { ShieldCheckIcon } from '@heroicons/react/24/outline';
-import { CoworkAgentEngine, ExternalAgentConfigSource } from '@shared/cowork/constants';
+import { AgentRunTargetType, CoworkAgentEngine, DefaultAgent, ExternalAgentConfigSource } from '@shared/cowork/constants';
 import React, { useEffect, useRef,useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
@@ -8,18 +8,18 @@ import { i18nService } from '../../services/i18n';
 import { quickActionService } from '../../services/quickAction';
 import { skillService } from '../../services/skill';
 import { RootState, store } from '../../store';
+import { setCurrentAgentId, setCurrentTeamId } from '../../store/slices/agentSlice';
 import { addMessage, clearCurrentSession, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { CoworkImageAttachment, CoworkSession, OpenClawEngineStatus } from '../../types/cowork';
+import { getAgentDisplayName, getAgentSelectIcon } from '../../utils/defaultAgentDisplay';
 import Modal from '../common/Modal';
 import ComposeIcon from '../icons/ComposeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import { PromptPanel,QuickActionBar } from '../quick-actions';
 import type { SettingsOpenOptions } from '../Settings';
 import WindowTitleBar from '../window/WindowTitleBar';
-import CoworkEngineSelector from './CoworkEngineSelector';
-import CoworkModelSelector from './CoworkModelSelector';
 import CoworkPromptInput, { type CoworkPromptInputRef, type CoworkSlashCommandHandler } from './CoworkPromptInput';
 import CoworkSessionDetail from './CoworkSessionDetail';
 
@@ -51,41 +51,54 @@ const COWORK_SLASH_PANEL_COMMANDS = [
   { command: '/memory', descriptionKey: 'coworkSlashCommandMemory' },
 ] as const;
 
-const usesLocalCliModelConfig = (config: RootState['cowork']['config']): boolean => (
+const usesLocalCliModelConfigForEngine = (
+  config: RootState['cowork']['config'],
+  engine: CoworkAgentEngine,
+): boolean => (
   (
-    config.agentEngine === CoworkAgentEngine.ClaudeCode
+    engine === CoworkAgentEngine.OpenClaw
+    && config.openclawConfigSource === ExternalAgentConfigSource.LocalCli
+  )
+  || (
+    engine === CoworkAgentEngine.ClaudeCode
     && config.claudeCodeConfigSource === ExternalAgentConfigSource.LocalCli
   )
   || (
-    config.agentEngine === CoworkAgentEngine.Codex
+    engine === CoworkAgentEngine.Codex
     && config.codexConfigSource === ExternalAgentConfigSource.LocalCli
   )
+  || engine === CoworkAgentEngine.CodexApp
   || (
-    config.agentEngine === CoworkAgentEngine.Hermes
+    engine === CoworkAgentEngine.Hermes
     && config.hermesConfigSource === ExternalAgentConfigSource.LocalCli
   )
   || (
-    config.agentEngine === CoworkAgentEngine.OpenCode
+    engine === CoworkAgentEngine.OpenCode
     && config.opencodeConfigSource === ExternalAgentConfigSource.LocalCli
   )
+  || engine === CoworkAgentEngine.GrokBuild
   || (
-    config.agentEngine === CoworkAgentEngine.QwenCode
+    engine === CoworkAgentEngine.QwenCode
     && config.qwenCodeConfigSource === ExternalAgentConfigSource.LocalCli
   )
   || (
-    config.agentEngine === CoworkAgentEngine.DeepSeekTui
+    engine === CoworkAgentEngine.DeepSeekTui
     && config.deepseekTuiConfigSource === ExternalAgentConfigSource.LocalCli
   )
 );
 
-const shouldRequireWesightModelConfig = (): boolean => (
-  !usesLocalCliModelConfig(store.getState().cowork.config)
+const shouldRequireWesightModelConfig = (engine?: CoworkAgentEngine): boolean => (
+  !usesLocalCliModelConfigForEngine(
+    store.getState().cowork.config,
+    engine || store.getState().cowork.config.agentEngine,
+  )
 );
 
 const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSkills, onShowMcp, onShowAgents, isSidebarCollapsed, onToggleSidebar, onNewChat, updateBadge }) => {
   const dispatch = useDispatch();
   const isMac = window.electron.platform === 'darwin';
   const [isInitialized, setIsInitialized] = useState(false);
+  const [, forceLanguageRefresh] = useState(0);
   const [openClawStatus, setOpenClawStatus] = useState<OpenClawEngineStatus | null>(null);
   const [isRestartingGateway, setIsRestartingGateway] = useState(false);
   const [slashPanelKind, setSlashPanelKind] = useState<SlashPanelKind | null>(null);
@@ -108,15 +121,38 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     isStreaming,
     config,
   } = useSelector((state: RootState) => state.cowork);
-  const isOpenClawEngine = config.agentEngine === CoworkAgentEngine.OpenClaw;
-  const isBuiltinCoworkEngine = config.agentEngine === CoworkAgentEngine.YdCowork;
 
   const activeSkillIds = useSelector((state: RootState) => state.skill.activeSkillIds);
   const skills = useSelector((state: RootState) => state.skill.skills);
   const quickActions = useSelector((state: RootState) => state.quickAction.actions);
   const selectedActionId = useSelector((state: RootState) => state.quickAction.selectedActionId);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const currentTeamId = useSelector((state: RootState) => state.agent.currentTeamId);
+  const currentTargetType = useSelector((state: RootState) => state.agent.currentTargetType);
+  const agents = useSelector((state: RootState) => state.agent.agents);
+  const teams = useSelector((state: RootState) => state.agent.teams);
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const currentTeam = currentTeamId ? teams.find((team) => team.id === currentTeamId) : null;
+  const getRuntimeEngineForAgent = (agentId: string): CoworkAgentEngine => {
+    if (agentId === DefaultAgent.Id) {
+      return config.agentEngine;
+    }
+    return agents.find((agent) => agent.id === agentId)?.agentEngine || config.agentEngine;
+  };
+  const selectedRuntimeEngine = currentTargetType === AgentRunTargetType.Team
+    ? config.agentEngine
+    : getRuntimeEngineForAgent(currentAgentId);
+  const canSelectRuntimeEngine = currentTargetType === AgentRunTargetType.Agent
+    && currentAgentId === DefaultAgent.Id;
+  const isOpenClawEngine = selectedRuntimeEngine === CoworkAgentEngine.OpenClaw;
+  const isBuiltinCoworkEngine = selectedRuntimeEngine === CoworkAgentEngine.YdCowork;
+
+  useEffect(() => {
+    const unsubscribe = i18nService.subscribe(() => {
+      forceLanguageRefresh((prev) => prev + 1);
+    });
+    return unsubscribe;
+  }, []);
 
   const buildApiConfigNotice = (error?: string): { noticeI18nKey: string; noticeExtra?: string } => {
     const key = 'coworkModelSettingsRequired';
@@ -212,7 +248,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       } catch (error) {
         console.error('Failed to load quick actions:', error);
       }
-      if (shouldRequireWesightModelConfig()) {
+      if (shouldRequireWesightModelConfig(selectedRuntimeEngine)) {
         try {
           const apiConfig = await coworkService.checkApiConfig();
           if (apiConfig && !apiConfig.hasConfig) {
@@ -272,7 +308,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         return false;
       }
 
-      if (shouldRequireWesightModelConfig()) {
+      if (shouldRequireWesightModelConfig(selectedRuntimeEngine)) {
         try {
           const apiConfig = await coworkService.checkApiConfig();
           if (apiConfig && !apiConfig.hasConfig) {
@@ -308,7 +344,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         systemPrompt: '',
         executionMode: config.executionMode || 'local',
         activeSkillIds: sessionSkillIds,
-        agentId: currentAgentId,
+        agentId: currentTargetType === AgentRunTargetType.Team && currentTeamId
+          ? `team:${currentTeamId}`
+          : currentAgentId,
+        teamId: currentTargetType === AgentRunTargetType.Team ? currentTeamId : null,
         messages: [
           {
             id: `msg-${now}`,
@@ -355,6 +394,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         systemPrompt: combinedSystemPrompt,
         activeSkillIds: sessionSkillIds,
         agentId: currentAgentId,
+        teamId: currentTargetType === AgentRunTargetType.Team && currentTeamId ? currentTeamId : undefined,
         imageAttachments,
       });
 
@@ -486,14 +526,18 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     }, 0);
   };
 
-  const getEngineLabel = () => {
-    switch (config.agentEngine) {
+  const getEngineLabel = (engine: CoworkAgentEngine = selectedRuntimeEngine) => {
+    switch (engine) {
       case CoworkAgentEngine.ClaudeCode:
         return i18nService.t('coworkAgentEngineClaudeCode');
       case CoworkAgentEngine.Codex:
         return i18nService.t('coworkAgentEngineCodex');
+      case CoworkAgentEngine.CodexApp:
+        return i18nService.t('coworkAgentEngineCodexApp');
       case CoworkAgentEngine.OpenCode:
         return i18nService.t('coworkAgentEngineOpenCode');
+      case CoworkAgentEngine.GrokBuild:
+        return i18nService.t('coworkAgentEngineGrokBuild');
       case CoworkAgentEngine.QwenCode:
         return i18nService.t('coworkAgentEngineQwenCode');
       case CoworkAgentEngine.DeepSeekTui:
@@ -507,6 +551,56 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         return i18nService.t('coworkAgentEngineClaudeLegacy');
     }
   };
+
+  const handleRunTargetChange = (value: string) => {
+    if (value.startsWith('team:')) {
+      const teamId = value.slice('team:'.length);
+      dispatch(setCurrentTeamId(teamId));
+      return;
+    }
+    dispatch(setCurrentAgentId(value));
+  };
+
+  const runTargetValue = currentTargetType === AgentRunTargetType.Team && currentTeamId
+    ? `team:${currentTeamId}`
+    : currentAgentId;
+
+  const renderRunTargetSelector = () => (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface/70 px-3 py-2">
+      <span className="text-xs font-medium text-secondary">
+        {i18nService.t('agentRunTargetLabel')}
+      </span>
+      <select
+        value={runTargetValue}
+        onChange={(event) => handleRunTargetChange(event.target.value)}
+        className="min-w-[180px] rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-primary"
+      >
+        <optgroup label={i18nService.t('agentRunTargetAgents')}>
+          {agents.filter((agent) => agent.enabled).map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {getAgentSelectIcon(agent) ? `${getAgentSelectIcon(agent)} ` : ''}{getAgentDisplayName(agent)} · {getEngineLabel(getRuntimeEngineForAgent(agent.id))}
+            </option>
+          ))}
+        </optgroup>
+        {teams.filter((team) => team.enabled).length > 0 && (
+          <optgroup label={i18nService.t('agentRunTargetTeams')}>
+            {teams.filter((team) => team.enabled).map((team) => (
+              <option key={team.id} value={`team:${team.id}`}>
+                {team.icon ? `${team.icon} ` : ''}{team.name} · {team.members.length}{i18nService.t('agentTeamMemberUnit')}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+      <span className="text-xs text-secondary">
+        {currentTargetType === AgentRunTargetType.Team && currentTeam
+          ? i18nService.t('agentRunTargetTeamHint')
+            .replace('{count}', String(currentTeam.members.length))
+          : i18nService.t('agentRunTargetAgentHint')
+            .replace('{engine}', getEngineLabel(selectedRuntimeEngine))}
+      </span>
+    </div>
+  );
 
   const getSessionStatusLabel = (status?: string) => {
     switch (status) {
@@ -532,6 +626,17 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     const normalizedCommand = command.toLowerCase();
     switch (normalizedCommand) {
       case '/model':
+        if (currentSession) {
+          const runtime = currentSession.runtimeSnapshot;
+          showSlashToast(
+            runtime
+              ? i18nService.t('coworkRuntimeLockedToast')
+                .replace('{engine}', runtime.engineLabel)
+                .replace('{model}', runtime.modelLabel || runtime.modelName || runtime.modelId || '-')
+              : i18nService.t('coworkRuntimeLocked'),
+          );
+          return true;
+        }
         openModelSelector();
         return true;
       case '/context':
@@ -573,43 +678,49 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
   const getModelContextLabel = () => {
     if (
-      config.agentEngine === CoworkAgentEngine.OpenClaw
+      selectedRuntimeEngine === CoworkAgentEngine.OpenClaw
       && config.openclawConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
     }
     if (
-      config.agentEngine === CoworkAgentEngine.ClaudeCode
+      selectedRuntimeEngine === CoworkAgentEngine.ClaudeCode
       && config.claudeCodeConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
     }
     if (
-      config.agentEngine === CoworkAgentEngine.Codex
+      selectedRuntimeEngine === CoworkAgentEngine.Codex
       && config.codexConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
     }
+    if (selectedRuntimeEngine === CoworkAgentEngine.CodexApp) {
+      return i18nService.t('coworkAgentCodexAppModelSourceValue');
+    }
     if (
-      config.agentEngine === CoworkAgentEngine.Hermes
+      selectedRuntimeEngine === CoworkAgentEngine.Hermes
       && config.hermesConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
     }
     if (
-      config.agentEngine === CoworkAgentEngine.OpenCode
+      selectedRuntimeEngine === CoworkAgentEngine.OpenCode
       && config.opencodeConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
     }
+    if (selectedRuntimeEngine === CoworkAgentEngine.GrokBuild) {
+      return i18nService.t('coworkAgentConfigSourceLocalCli');
+    }
     if (
-      config.agentEngine === CoworkAgentEngine.QwenCode
+      selectedRuntimeEngine === CoworkAgentEngine.QwenCode
       && config.qwenCodeConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
     }
     if (
-      config.agentEngine === CoworkAgentEngine.DeepSeekTui
+      selectedRuntimeEngine === CoworkAgentEngine.DeepSeekTui
       && config.deepseekTuiConfigSource === ExternalAgentConfigSource.LocalCli
     ) {
       return i18nService.t('coworkAgentConfigSourceLocalCli');
@@ -859,8 +970,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         )}
       </div>
       <div className="non-draggable flex items-center gap-2">
-        <CoworkModelSelector />
-        <CoworkEngineSelector />
         <div className="flex items-center gap-1.5 mr-2 px-2.5 py-1">
           <ShieldCheckIcon className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
           <span className="text-xs text-green-600 dark:text-green-400 whitespace-nowrap">
@@ -945,6 +1054,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
           {/* Prompt Input Area - Large version with folder selector */}
           <div className="space-y-3">
+            {renderRunTargetSelector()}
             <div className="shadow-glow-accent rounded-2xl">
               <CoworkPromptInput
                 ref={promptInputRef}
@@ -960,6 +1070,11 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
                   await coworkService.updateConfig({ workingDirectory: dir });
                 }}
                 showFolderSelector={true}
+                showEngineSelector={true}
+                effectiveEngine={selectedRuntimeEngine}
+                engineSelectorReadOnly={!canSelectRuntimeEngine}
+                showModelSelector={true}
+                modelSelectorReadOnly={!canSelectRuntimeEngine}
                 onManageSkills={() => onShowSkills?.()}
               />
             </div>

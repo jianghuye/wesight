@@ -9,7 +9,11 @@ import fs from 'fs';
 import path from 'path';
 
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
-import { RuntimeCallSource } from '../../shared/cowork/constants';
+import {
+  AgentRunTargetType,
+  CoworkSessionKind,
+  RuntimeCallSource,
+} from '../../shared/cowork/constants';
 import type { CoworkMessage, CoworkStore } from '../coworkStore';
 import { t } from '../i18n';
 import type { CoworkRuntime, PermissionRequest } from '../libs/agentEngine/types';
@@ -52,6 +56,26 @@ const IM_ALLOW_RESPONSE_RE = /^(允许|同意|yes|y)$/i;
 const IM_DENY_RESPONSE_RE = /^(拒绝|不同意|no|n)$/i;
 const IM_ALLOW_OPTION_LABEL = '允许本次操作';
 
+const parsePlatformAgentBinding = (value: string | undefined): { type: AgentRunTargetType; id: string } => {
+  if (!value) {
+    return { type: AgentRunTargetType.Agent, id: 'main' };
+  }
+  if (value.startsWith('team:')) {
+    const id = value.slice('team:'.length).trim();
+    return { type: AgentRunTargetType.Team, id: id || 'main' };
+  }
+  if (value.startsWith('agent:')) {
+    const id = value.slice('agent:'.length).trim();
+    return { type: AgentRunTargetType.Agent, id: id || 'main' };
+  }
+  return { type: AgentRunTargetType.Agent, id: value };
+};
+
+const normalizeAgentBindingId = (value: string | undefined): string => {
+  if (!value) return 'main';
+  return value.startsWith('agent:') ? value.slice('agent:'.length) || 'main' : value;
+};
+
 export interface IMCoworkHandlerOptions {
   coworkRuntime: CoworkRuntime;
   coworkStore: CoworkStore;
@@ -64,6 +88,12 @@ export interface IMCoworkHandlerOptions {
     request: ParsedIMScheduledTaskRequest;
   }) => Promise<IMScheduledTaskCreationResult>;
   sendAsyncReply?: (platform: Platform, conversationId: string, text: string) => Promise<boolean>;
+  runTeamSession?: (params: {
+    teamId: string;
+    parentSessionId: string;
+    prompt: string;
+    runtimeSource: RuntimeCallSource;
+  }) => Promise<void>;
 }
 
 export class IMCoworkHandler extends EventEmitter {
@@ -78,6 +108,7 @@ export class IMCoworkHandler extends EventEmitter {
     request: ParsedIMScheduledTaskRequest;
   }) => Promise<IMScheduledTaskCreationResult>;
   private sendAsyncReply?: (platform: Platform, conversationId: string, text: string) => Promise<boolean>;
+  private runTeamSession?: IMCoworkHandlerOptions['runTeamSession'];
 
   // Track active sessions' message accumulation
   private messageAccumulators: Map<string, MessageAccumulator> = new Map();
@@ -102,6 +133,7 @@ export class IMCoworkHandler extends EventEmitter {
     this.detectScheduledTaskRequest = options.detectScheduledTaskRequest;
     this.createScheduledTask = options.createScheduledTask;
     this.sendAsyncReply = options.sendAsyncReply;
+    this.runTeamSession = options.runTeamSession;
 
     this.initializeMappedSessions();
     this.setupEventListeners();
@@ -207,6 +239,23 @@ export class IMCoworkHandler extends EventEmitter {
       );
     }
 
+    const teamSession = this.coworkStore.getSession(coworkSessionId);
+    if (teamSession?.teamId && this.runTeamSession) {
+      this.coworkStore.addMessage(coworkSessionId, {
+        type: 'user',
+        content: formattedContent,
+        metadata: {},
+      });
+      await this.runTeamSession({
+        teamId: teamSession.teamId,
+        parentSessionId: coworkSessionId,
+        prompt: formattedContent,
+        runtimeSource: RuntimeCallSource.Im,
+      });
+      const updatedSession = this.coworkStore.getSession(coworkSessionId);
+      return analyzeIMReply(updatedSession?.messages || []).assistantText || DEFAULT_IM_EMPTY_REPLY;
+    }
+
     const responsePromise = this.createAccumulatorPromise(coworkSessionId);
 
     // Start or continue session
@@ -214,6 +263,9 @@ export class IMCoworkHandler extends EventEmitter {
     const systemPrompt = await this.buildSystemPromptWithSkills();
     const hasAvailableSkills = systemPrompt.includes('<available_skills>');
     const session = this.coworkStore.getSession(coworkSessionId);
+    const runtimeAgentId = normalizeAgentBindingId(session?.agentId);
+    const runtimeAgent = this.coworkStore.getAgent(runtimeAgentId);
+    const runtimeAgentEngine = runtimeAgent?.agentEngine;
     if (session && session.systemPrompt !== systemPrompt) {
       // Claude resume sessions may ignore updated system prompt.
       // Reset claudeSessionId so this turn starts a fresh SDK session with new prompt.
@@ -252,6 +304,8 @@ export class IMCoworkHandler extends EventEmitter {
     if (isActive) {
       this.coworkRuntime.continueSession(coworkSessionId, formattedContent, {
         systemPrompt,
+        agentId: runtimeAgentId,
+        agentEngine: runtimeAgentEngine,
         runtimeSource: RuntimeCallSource.Im,
       })
         .catch(onSessionStartError);
@@ -260,6 +314,8 @@ export class IMCoworkHandler extends EventEmitter {
         workspaceRoot: session?.cwd,
         confirmationMode: 'text',
         systemPrompt,
+        agentId: runtimeAgentId,
+        agentEngine: runtimeAgentEngine,
         runtimeSource: RuntimeCallSource.Im,
       }).catch(onSessionStartError);
     }
@@ -335,7 +391,10 @@ export class IMCoworkHandler extends EventEmitter {
     // Resolve the agent bound to this platform (single-instance platforms only;
     // multi-instance platforms route through OpenClaw channel session sync)
     const imSettings = this.imStore.getIMSettings();
-    const agentId = imSettings.platformAgentBindings?.[platform] || 'main';
+    const bindingTarget = parsePlatformAgentBinding(imSettings.platformAgentBindings?.[platform]);
+    const agentId = bindingTarget.type === AgentRunTargetType.Team
+      ? `team:${bindingTarget.id}`
+      : bindingTarget.id;
 
     const session = this.coworkStore.createSession(
       title,
@@ -343,11 +402,17 @@ export class IMCoworkHandler extends EventEmitter {
       systemPrompt,
       config.executionMode || 'local',
       [],
-      agentId
+      agentId,
+      bindingTarget.type === AgentRunTargetType.Team
+        ? {
+          sessionKind: CoworkSessionKind.TeamParent,
+          teamId: bindingTarget.id,
+        }
+        : undefined,
     );
 
     // Save mapping
-    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id);
+    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id, agentId);
     this.trackSessionMapping(mapping);
 
     return session.id;

@@ -1003,7 +1003,9 @@ export class OpenClawConfigSync {
     }
 
     const sandboxMode = mapExecutionModeToSandboxMode(coworkConfig.executionMode || 'local', this.isEnterprise());
-    console.log(`[OpenClawConfigSync] sandbox mode: ${sandboxMode} (executionMode: ${coworkConfig.executionMode || 'local'}, enterprise: ${this.isEnterprise()})`);
+    if (process.env.WESIGHT_OPENCLAW_VERBOSE_LOGS === '1') {
+      console.debug(`[OpenClawConfigSync] sandbox mode resolved to ${sandboxMode}`);
+    }
 
     const workspaceDir = (coworkConfig.workingDirectory || '').trim();
 
@@ -1542,10 +1544,12 @@ export class OpenClawConfigSync {
       ...existingConfigForMerge,
       ...managedConfig,
     }, null, 2)}\n`;
-    console.log('[OpenClawConfigSync] sync() managedConfig key fields:', {
-      providers: (managedConfig.models as Record<string, unknown>)?.providers,
-      primaryModel: ((managedConfig.agents as Record<string, unknown>)?.defaults as Record<string, unknown>)?.model,
-    });
+    if (process.env.WESIGHT_OPENCLAW_VERBOSE_LOGS === '1') {
+      console.debug('[OpenClawConfigSync] managed model config snapshot:', {
+        providers: (managedConfig.models as Record<string, unknown>)?.providers,
+        primaryModel: ((managedConfig.agents as Record<string, unknown>)?.defaults as Record<string, unknown>)?.model,
+      });
+    }
     let currentContent = '';
     try {
       currentContent = fs.readFileSync(configPath, 'utf8');
@@ -2036,6 +2040,10 @@ export class OpenClawConfigSync {
     const agents = this.getAgents?.() ?? [];
 
     const bindings: Array<Record<string, unknown>> = [];
+    const normalizeBindingAgentId = (value: string | undefined): string | null => {
+      if (!value || value === 'main' || value.startsWith('team:')) return null;
+      return value.startsWith('agent:') ? value.slice('agent:'.length) || null : value;
+    };
 
     // Handle per-instance bindings for multi-instance platforms
     const multiInstanceChannels: Record<string, { channel: string; getInstances: () => Array<{ instanceId: string; enabled: boolean }> }> = {
@@ -2054,15 +2062,15 @@ export class OpenClawConfigSync {
           if (!inst.enabled) continue;
           // Check for per-instance binding: `platform:instanceId`
           const bindingKey = `${platform}:${inst.instanceId}`;
-          const agentId = platformBindings[bindingKey];
-          if (!agentId || agentId === 'main') continue;
+          const agentId = normalizeBindingAgentId(platformBindings[bindingKey]);
+          if (!agentId) continue;
           const targetAgent = agents.find((a) => a.id === agentId && a.enabled);
           if (!targetAgent) continue;
           bindings.push({ agentId, match: { channel, accountId: inst.instanceId.slice(0, 8) } });
         }
         // Also check legacy platform-level binding
-        const platformAgentId = platformBindings[platform];
-        if (platformAgentId && platformAgentId !== 'main') {
+        const platformAgentId = normalizeBindingAgentId(platformBindings[platform]);
+        if (platformAgentId) {
           const targetAgent = agents.find((a) => a.id === platformAgentId && a.enabled);
           if (targetAgent && instances.some(i => i.enabled)) {
             bindings.push({ agentId: platformAgentId, match: { channel } });
@@ -2086,15 +2094,16 @@ export class OpenClawConfigSync {
 
     for (const { getter, channel, platform } of singleInstanceChannels) {
       const agentId = platformBindings[platform];
-      if (!agentId || agentId === 'main') continue;
+      const normalizedAgentId = normalizeBindingAgentId(agentId);
+      if (!normalizedAgentId) continue;
 
-      const targetAgent = agents.find((a) => a.id === agentId && a.enabled);
+      const targetAgent = agents.find((a) => a.id === normalizedAgentId && a.enabled);
       if (!targetAgent) continue;
 
       try {
         const cfg = getter();
         if (cfg?.enabled) {
-          bindings.push({ agentId, match: { channel } });
+          bindings.push({ agentId: normalizedAgentId, match: { channel } });
         }
       } catch {
         // Skip channels that fail to load config

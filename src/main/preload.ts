@@ -1,11 +1,13 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import { CoworkIpcChannel } from '../shared/cowork/constants';
+import type { CoworkFileActivity } from '../shared/cowork/fileActivity';
 import { DialogIpcChannel } from '../shared/dialog/constants';
-import { type FeishuEngineKeyType, type FeishuManagementModeType,ImIpcChannel } from '../shared/im/constants';
-import { DesktopPetIpcChannel, type PetConfig, type PetPosition } from '../shared/pet/constants';
+import { type FeishuEngineKeyType, type FeishuManagementModeType, type FeishuRuntimeOwnershipType, ImIpcChannel } from '../shared/im/constants';
+import { DesktopPetIpcChannel, type DesktopPetTaskSnapshot, type PetConfig, type PetPosition } from '../shared/pet/constants';
 import type { Platform } from '../shared/platform';
+import { SkillsIpcChannel } from '../shared/skills/constants';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -17,23 +19,26 @@ contextBridge.exposeInMainWorld('electron', {
     remove: (key: string) => ipcRenderer.invoke('store:remove', key),
   },
   skills: {
-    list: () => ipcRenderer.invoke('skills:list'),
-    setEnabled: (options: { id: string; enabled: boolean }) => ipcRenderer.invoke('skills:setEnabled', options),
-    delete: (id: string) => ipcRenderer.invoke('skills:delete', id),
-    download: (source: string) => ipcRenderer.invoke('skills:download', source),
-    upgrade: (skillId: string, downloadUrl: string) => ipcRenderer.invoke('skills:upgrade', skillId, downloadUrl),
+    list: () => ipcRenderer.invoke(SkillsIpcChannel.List),
+    setEnabled: (options: { id: string; enabled: boolean }) => ipcRenderer.invoke(SkillsIpcChannel.SetEnabled, options),
+    delete: (id: string) => ipcRenderer.invoke(SkillsIpcChannel.Delete, id),
+    download: (source: string) => ipcRenderer.invoke(SkillsIpcChannel.Download, source),
+    upgrade: (skillId: string, downloadUrl: string) => ipcRenderer.invoke(SkillsIpcChannel.Upgrade, skillId, downloadUrl),
     confirmInstall: (pendingId: string, action: string) =>
-      ipcRenderer.invoke('skills:confirmInstall', pendingId, action),
-    getRoot: () => ipcRenderer.invoke('skills:getRoot'),
-    autoRoutingPrompt: () => ipcRenderer.invoke('skills:autoRoutingPrompt'),
-    getConfig: (skillId: string) => ipcRenderer.invoke('skills:getConfig', skillId),
-    setConfig: (skillId: string, config: Record<string, string>) => ipcRenderer.invoke('skills:setConfig', skillId, config),
+      ipcRenderer.invoke(SkillsIpcChannel.ConfirmInstall, pendingId, action),
+    getRoot: () => ipcRenderer.invoke(SkillsIpcChannel.GetRoot),
+    autoRoutingPrompt: () => ipcRenderer.invoke(SkillsIpcChannel.AutoRoutingPrompt),
+    getConfig: (skillId: string) => ipcRenderer.invoke(SkillsIpcChannel.GetConfig, skillId),
+    setConfig: (skillId: string, config: Record<string, string>) => ipcRenderer.invoke(SkillsIpcChannel.SetConfig, skillId, config),
     testEmailConnectivity: (skillId: string, config: Record<string, string>) =>
-      ipcRenderer.invoke('skills:testEmailConnectivity', skillId, config),
+      ipcRenderer.invoke(SkillsIpcChannel.TestEmailConnectivity, skillId, config),
+    fetchMarketplace: (options?: any) => ipcRenderer.invoke(SkillsIpcChannel.FetchMarketplace, options),
+    searchMarketplace: (options?: any) => ipcRenderer.invoke(SkillsIpcChannel.SearchMarketplace, options),
+    installMarketplaceSkill: (skill: any) => ipcRenderer.invoke(SkillsIpcChannel.InstallMarketplaceSkill, skill),
     onChanged: (callback: () => void) => {
       const handler = () => callback();
-      ipcRenderer.on('skills:changed', handler);
-      return () => ipcRenderer.removeListener('skills:changed', handler);
+      ipcRenderer.on(SkillsIpcChannel.Changed, handler);
+      return () => ipcRenderer.removeListener(SkillsIpcChannel.Changed, handler);
     },
   },
   mcp: {
@@ -69,10 +74,22 @@ contextBridge.exposeInMainWorld('electron', {
     setPosition: (position: PetPosition & { persist?: boolean }) =>
       ipcRenderer.invoke(DesktopPetIpcChannel.SetPosition, position),
     openMainWindow: () => ipcRenderer.invoke(DesktopPetIpcChannel.OpenMainWindow),
+    getTaskSnapshot: () => ipcRenderer.invoke(DesktopPetIpcChannel.GetTaskSnapshot),
+    openTask: (sessionId: string) => ipcRenderer.invoke(DesktopPetIpcChannel.OpenTask, { sessionId }),
     onConfigChanged: (callback: (config: PetConfig) => void) => {
-      const handler = (_event: any, config: PetConfig) => callback(config);
+      const handler = (_event: IpcRendererEvent, config: PetConfig) => callback(config);
       ipcRenderer.on(DesktopPetIpcChannel.ConfigChanged, handler);
       return () => ipcRenderer.removeListener(DesktopPetIpcChannel.ConfigChanged, handler);
+    },
+    onTaskChanged: (callback: (snapshot: DesktopPetTaskSnapshot | null) => void) => {
+      const handler = (_event: IpcRendererEvent, snapshot: DesktopPetTaskSnapshot | null) => callback(snapshot);
+      ipcRenderer.on(DesktopPetIpcChannel.TaskChanged, handler);
+      return () => ipcRenderer.removeListener(DesktopPetIpcChannel.TaskChanged, handler);
+    },
+    onOpenTaskRequested: (callback: (data: { sessionId: string }) => void) => {
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string }) => callback(data);
+      ipcRenderer.on(DesktopPetIpcChannel.OpenTaskRequested, handler);
+      return () => ipcRenderer.removeListener(DesktopPetIpcChannel.OpenTaskRequested, handler);
     },
   },
   api: {
@@ -180,6 +197,18 @@ contextBridge.exposeInMainWorld('electron', {
       },
     },
   },
+  codexApp: {
+    engine: {
+      getStatus: () => ipcRenderer.invoke('codexApp:engine:getStatus'),
+      start: () => ipcRenderer.invoke('codexApp:engine:start'),
+    },
+    tasks: {
+      sync: (input?: { cwd?: string; includeAll?: boolean; limit?: number }) =>
+        ipcRenderer.invoke(CoworkIpcChannel.CodexAppTasksSync, input || {}),
+      open: (input: { threadId: string }) =>
+        ipcRenderer.invoke(CoworkIpcChannel.CodexAppTaskOpen, input),
+    },
+  },
   agents: {
     list: async () => {
       const result = await ipcRenderer.invoke('agents:list');
@@ -189,11 +218,11 @@ contextBridge.exposeInMainWorld('electron', {
       const result = await ipcRenderer.invoke('agents:get', id);
       return result?.success ? result.agent : null;
     },
-    create: async (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => {
+    create: async (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; agentEngine?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => {
       const result = await ipcRenderer.invoke('agents:create', request);
       return result?.success ? result.agent : null;
     },
-    update: async (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => {
+    update: async (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; agentEngine?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => {
       const result = await ipcRenderer.invoke('agents:update', id, updates);
       return result?.success ? result.agent : null;
     },
@@ -209,10 +238,46 @@ contextBridge.exposeInMainWorld('electron', {
       const result = await ipcRenderer.invoke('agents:addPreset', presetId);
       return result?.success ? result.agent : null;
     },
+    listTeams: async () => {
+      const result = await ipcRenderer.invoke('agents:teams:list');
+      return result?.success ? result.teams : [];
+    },
+    getTeam: async (id: string) => {
+      const result = await ipcRenderer.invoke('agents:teams:get', id);
+      return result?.success ? result.team : null;
+    },
+    createTeam: async (request: any) => {
+      const result = await ipcRenderer.invoke('agents:teams:create', request);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to create agent team');
+      }
+      return result?.success ? result.team : null;
+    },
+    updateTeam: async (id: string, updates: any) => {
+      const result = await ipcRenderer.invoke('agents:teams:update', id, updates);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to update agent team');
+      }
+      return result?.success ? result.team : null;
+    },
+    deleteTeam: async (id: string) => {
+      const result = await ipcRenderer.invoke('agents:teams:delete', id);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to delete agent team');
+      }
+      return result?.success ? result.deleted : false;
+    },
+    installDevelopmentTeam: async () => {
+      const result = await ipcRenderer.invoke('agents:teams:installDevelopmentTemplate');
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to install development team');
+      }
+      return result?.success ? result.team : null;
+    },
   },
   cowork: {
     // Session management
-    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) =>
+    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; activeSkillIds?: string[]; agentId?: string; teamId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) =>
       ipcRenderer.invoke('cowork:session:start', options),
     continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) =>
       ipcRenderer.invoke('cowork:session:continue', options),
@@ -253,7 +318,7 @@ contextBridge.exposeInMainWorld('electron', {
     setConfig: (config: {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
-      agentEngine?: 'openclaw' | 'hermes' | 'yd_cowork' | 'claude_code' | 'codex' | 'opencode' | 'qwen_code' | 'deepseek_tui';
+      agentEngine?: 'openclaw' | 'hermes' | 'yd_cowork' | 'claude_code' | 'codex' | 'codex_app' | 'opencode' | 'grok_build' | 'qwen_code' | 'deepseek_tui';
       openclawConfigSource?: 'wesight_model' | 'local_cli';
       claudeCodeConfigSource?: 'wesight_model' | 'local_cli';
       codexConfigSource?: 'wesight_model' | 'local_cli';
@@ -279,12 +344,14 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(CoworkIpcChannel.RuntimeMetricsCalls, filters),
     getRuntimeCallDetail: (callId: string) =>
       ipcRenderer.invoke(CoworkIpcChannel.RuntimeMetricsDetail, { callId }),
-    installAgentCli: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui') =>
+    ensureStudioAssets: () =>
+      ipcRenderer.invoke(CoworkIpcChannel.StudioAssetsEnsure),
+    installAgentCli: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui') =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentCliInstall, { appType }),
-    listAgentProviders: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui') =>
+    listAgentProviders: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui') =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentProvidersList, { appType }),
     saveAgentProvider: (input: {
-      appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui';
+      appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui';
       id?: string;
       name: string;
       apiKey?: string;
@@ -295,13 +362,13 @@ contextBridge.exposeInMainWorld('electron', {
       setCurrent?: boolean;
     }) =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentProvidersSave, input),
-    deleteAgentProvider: (input: { appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui'; id: string }) =>
+    deleteAgentProvider: (input: { appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui'; id: string }) =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentProvidersDelete, input),
-    setCurrentAgentProvider: (input: { appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui'; id: string }) =>
+    setCurrentAgentProvider: (input: { appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui'; id: string }) =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentProvidersSetCurrent, input),
-    importLiveAgentProvider: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui') =>
+    importLiveAgentProvider: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui') =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentProvidersImportLive, { appType }),
-    importLocalAgentConfigToModelSettings: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui') =>
+    importLocalAgentConfigToModelSettings: (appType: 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui') =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentConfigImportLocalToModelSettings, { appType }),
     syncOpenClawGlobalConfig: () =>
       ipcRenderer.invoke(CoworkIpcChannel.AgentConfigSyncOpenClawGlobal),
@@ -356,6 +423,11 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = (_event: any, data: { sessionId: string; messageId: string; content: string }) => callback(data);
       ipcRenderer.on('cowork:stream:messageUpdate', handler);
       return () => ipcRenderer.removeListener('cowork:stream:messageUpdate', handler);
+    },
+    onStreamFileActivity: (callback: (data: { sessionId: string; activity: CoworkFileActivity }) => void) => {
+      const handler = (_event: IpcRendererEvent, data: { sessionId: string; activity: CoworkFileActivity }) => callback(data);
+      ipcRenderer.on(CoworkIpcChannel.StreamFileActivity, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamFileActivity, handler);
     },
     onStreamPermission: (callback: (data: { sessionId: string; request: any }) => void) => {
       const handler = (_event: any, data: { sessionId: string; request: any }) => callback(data);
@@ -479,6 +551,10 @@ contextBridge.exposeInMainWorld('electron', {
     importOpenClawLocalFeishu: () => ipcRenderer.invoke(ImIpcChannel.FeishuImportOpenClawLocal),
     setFeishuManagementMode: (mode: FeishuManagementModeType) =>
       ipcRenderer.invoke(ImIpcChannel.FeishuSetManagementMode, mode),
+    setFeishuRuntimeOwnership: (input: { engineKey: FeishuEngineKeyType; ownership: FeishuRuntimeOwnershipType }) =>
+      ipcRenderer.invoke(ImIpcChannel.FeishuSetRuntimeOwnership, input),
+    refreshFeishuRuntimeOwnership: (engineKey?: FeishuEngineKeyType) =>
+      ipcRenderer.invoke(ImIpcChannel.FeishuRefreshRuntimeOwnership, engineKey),
 
     // Event listeners
     onStatusChange: (callback: (status: any) => void) => {

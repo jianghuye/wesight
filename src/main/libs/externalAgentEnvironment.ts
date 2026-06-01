@@ -13,13 +13,17 @@ import {
   parseDeepSeekTuiConfigText,
 } from './deepSeekTuiConfig';
 import {
+  parseGrokBuildConfigText,
+  summarizeGrokBuildConfig,
+} from './grokBuildConfig';
+import {
   listHermesModelProviders,
   parseHermesConfigText,
   parseHermesDotenvText,
 } from './hermesConfig';
 import { readOpenClawGlobalConfig, summarizeOpenClawConfig } from './openclawSystemRuntime';
 
-export type CliAppType = 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui';
+export type CliAppType = 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui';
 
 export interface CliAppConfigSnapshot {
   appType: CliAppType;
@@ -146,6 +150,8 @@ const getHermesConfigDir = (): string => path.join(homeDir(), '.hermes');
 
 const getOpenClawConfigDir = (): string => path.join(homeDir(), '.openclaw');
 
+const getGrokBuildConfigDir = (): string => path.join(homeDir(), '.grok');
+
 const getQwenCodeConfigDir = (): string => path.join(homeDir(), '.qwen');
 
 const getDeepSeekTuiConfigDir = (): string => path.join(homeDir(), '.deepseek');
@@ -218,6 +224,20 @@ const readDeepSeekTuiConfigSummary = (
   };
 };
 
+const readGrokBuildConfigSummary = (
+  configPath: string,
+): { providerId: string | null; providerName: string | null; count: number } => {
+  if (!fs.existsSync(configPath)) {
+    return { providerId: null, providerName: null, count: 0 };
+  }
+  const summary = summarizeGrokBuildConfig(parseGrokBuildConfigText(fs.readFileSync(configPath, 'utf8')));
+  return {
+    providerId: summary.providerId,
+    providerName: summary.providerName,
+    count: summary.count,
+  };
+};
+
 const readHermesConfigSummary = (
   configPath: string,
   envPath: string,
@@ -266,7 +286,7 @@ const readCurrentProviderFromDb = (
   appType: CliAppType,
   settingsCurrentProviderId: string | null,
 ): { provider: ProviderRow | null; count: number } => {
-  if (appType === 'openclaw' || appType === 'opencode' || appType === 'qwen' || appType === 'deepseek_tui') {
+  if (appType === 'openclaw' || appType === 'opencode' || appType === 'grok' || appType === 'qwen' || appType === 'deepseek_tui') {
     return { provider: null, count: 0 };
   }
   if (!fs.existsSync(dbPath)) {
@@ -368,6 +388,8 @@ const buildCliConfigSnapshot = (
         ? getOpenClawConfigDir()
       : appType === 'opencode'
         ? path.join(homeDir(), '.config', 'opencode')
+      : appType === 'grok'
+        ? getGrokBuildConfigDir()
         : appType === 'qwen'
           ? getQwenCodeConfigDir()
           : getDeepSeekTuiConfigDir();
@@ -381,6 +403,8 @@ const buildCliConfigSnapshot = (
       ? path.join(configDir, 'openclaw.json')
     : appType === 'opencode'
       ? path.join(configDir, 'opencode.json')
+      : appType === 'grok'
+        ? path.join(configDir, 'config.toml')
         : appType === 'qwen'
           ? path.join(configDir, 'settings.json')
           : path.join(configDir, 'config.toml');
@@ -394,6 +418,8 @@ const buildCliConfigSnapshot = (
       ? [path.join(configDir, '.env')]
     : appType === 'opencode'
       ? [path.join(getOpenCodeDataDir(), 'auth.json')]
+      : appType === 'grok'
+        ? [path.join(configDir, 'auth.json')]
         : appType === 'qwen'
           ? [path.join(configDir, 'oauth_creds.json')]
           : [path.join(configDir, 'sessions')];
@@ -439,6 +465,19 @@ const buildCliConfigSnapshot = (
   }
   if (appType === 'qwen') {
     const summary = readQwenCodeConfigSummary(primaryConfigPath);
+    return {
+      appType,
+      configDir,
+      primaryConfigPath,
+      secondaryConfigPaths,
+      configExists: fs.existsSync(primaryConfigPath),
+      currentProviderId: summary.providerId,
+      currentProviderName: summary.providerName,
+      providerCount: summary.count,
+    };
+  }
+  if (appType === 'grok') {
+    const summary = readGrokBuildConfigSummary(primaryConfigPath);
     return {
       appType,
       configDir,
@@ -522,6 +561,7 @@ export function getExternalAgentEnvironmentSnapshot(): ExternalAgentEnvironmentS
       buildCommandStatus(CoworkAgentEngine.OpenClaw, 'openclaw', 'openclaw', settings, dbPath),
       buildCommandStatus(CoworkAgentEngine.Hermes, 'hermes', 'hermes', settings, dbPath),
       buildCommandStatus(CoworkAgentEngine.OpenCode, 'opencode', 'opencode', settings, dbPath),
+      buildCommandStatus(CoworkAgentEngine.GrokBuild, 'grok', 'grok', settings, dbPath),
       buildCommandStatus(CoworkAgentEngine.QwenCode, 'qwen', 'qwen', settings, dbPath),
       buildCommandStatus(CoworkAgentEngine.DeepSeekTui, 'deepseek_tui', 'deepseek-tui', settings, dbPath),
     ],

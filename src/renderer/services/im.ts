@@ -3,7 +3,7 @@
  * IPC wrapper for IM gateway operations
  */
 
-import type { FeishuEngineKeyType, FeishuManagementModeType } from '@shared/im/constants';
+import type { FeishuEngineKeyType, FeishuManagementModeType, FeishuRuntimeOwnershipType } from '@shared/im/constants';
 import type { Platform } from '@shared/platform';
 import { PlatformRegistry } from '@shared/platform';
 
@@ -567,6 +567,45 @@ class IMService {
       return false;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update Feishu management mode';
+      store.dispatch(setError(message));
+      return false;
+    } finally {
+      store.dispatch(setLoading(false));
+    }
+  }
+
+  async setFeishuRuntimeOwnership(engineKey: FeishuEngineKeyType, ownership: FeishuRuntimeOwnershipType): Promise<boolean> {
+    try {
+      store.dispatch(setLoading(true));
+      const result = await window.electron.im.setFeishuRuntimeOwnership({ engineKey, ownership });
+      if (result.success) {
+        await this.loadConfig();
+        await this.loadStatus();
+        return true;
+      }
+      store.dispatch(setError(result.error || 'Failed to update Feishu runtime ownership'));
+      return false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update Feishu runtime ownership';
+      store.dispatch(setError(message));
+      return false;
+    } finally {
+      store.dispatch(setLoading(false));
+    }
+  }
+
+  async refreshFeishuRuntimeOwnership(engineKey?: FeishuEngineKeyType): Promise<boolean> {
+    try {
+      store.dispatch(setLoading(true));
+      const result = await window.electron.im.refreshFeishuRuntimeOwnership(engineKey);
+      if (result.success) {
+        await this.loadStatus();
+        return true;
+      }
+      store.dispatch(setError(result.error || 'Failed to refresh Feishu runtime ownership'));
+      return false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to refresh Feishu runtime ownership';
       store.dispatch(setError(message));
       return false;
     } finally {

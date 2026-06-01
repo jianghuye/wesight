@@ -1,17 +1,22 @@
 import type {
   CoworkAgentEngine,
+  CoworkSessionKind,
   DeepSeekTuiPermissionMode,
   ExternalAgentConfigSource,
   OpenCodePermissionMode,
   QwenCodePermissionMode,
 } from '@shared/cowork/constants';
+import type { CoworkFileActivity } from '@shared/cowork/fileActivity';
 import type {
   RuntimeCallRecord,
   RuntimeMetricsFilters,
   RuntimeMetricsSummary,
 } from '@shared/cowork/runtimeMetrics';
-import type { FeishuEngineKeyType, FeishuManagementModeType } from '@shared/im/constants';
-import type { PetConfig, PetPosition } from '@shared/pet/constants';
+import type { CoworkSessionRuntimeSnapshot } from '@shared/cowork/runtimeSnapshot';
+import type { CoworkStudioAssetsResult } from '@shared/cowork/studioAssets';
+import type { FeishuEngineKeyType, FeishuManagementModeType, FeishuRuntimeOwnershipType } from '@shared/im/constants';
+import type { DesktopPetTaskSnapshot, PetConfig, PetPosition } from '@shared/pet/constants';
+import type { SkillMarketplaceSort, SkillMarketplaceSourceType } from '@shared/skills/constants';
 
 interface ApiResponse {
   ok: boolean;
@@ -34,6 +39,7 @@ interface CoworkSession {
   id: string;
   title: string;
   claudeSessionId: string | null;
+  codexAppThreadId?: string | null;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
   cwd: string;
@@ -41,6 +47,10 @@ interface CoworkSession {
   executionMode: 'auto' | 'local' | 'sandbox';
   activeSkillIds: string[];
   agentId: string;
+  sessionKind?: CoworkSessionKind;
+  parentSessionId?: string | null;
+  teamId?: string | null;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   messages: CoworkMessage[];
   createdAt: number;
   updatedAt: number;
@@ -57,9 +67,14 @@ interface CoworkMessage {
 interface CoworkSessionSummary {
   id: string;
   title: string;
+  codexAppThreadId?: string | null;
   status: 'idle' | 'running' | 'completed' | 'error';
   pinned: boolean;
   agentId?: string;
+  sessionKind?: CoworkSessionKind;
+  parentSessionId?: string | null;
+  teamId?: string | null;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -108,7 +123,7 @@ type CoworkConfigUpdate = Partial<Pick<
   | 'memoryUserMemoriesMaxItems'
 >>;
 
-type CliAppType = 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'qwen' | 'deepseek_tui';
+type CliAppType = 'claude' | 'codex' | 'hermes' | 'openclaw' | 'opencode' | 'grok' | 'qwen' | 'deepseek_tui';
 
 interface CliAppConfigSnapshot {
   appType: CliAppType;
@@ -122,7 +137,7 @@ interface CliAppConfigSnapshot {
 }
 
 interface CliCommandStatus {
-  engine: Extract<CoworkAgentEngine, 'claude_code' | 'codex' | 'hermes' | 'opencode' | 'qwen_code' | 'deepseek_tui'>;
+  engine: Extract<CoworkAgentEngine, 'openclaw' | 'claude_code' | 'codex' | 'hermes' | 'opencode' | 'grok_build' | 'qwen_code' | 'deepseek_tui'>;
   appType: CliAppType;
   command: string;
   found: boolean;
@@ -146,9 +161,33 @@ interface CcSwitchSnapshot {
 interface ExternalAgentEnvironmentSnapshot {
   ccSwitch: CcSwitchSnapshot;
   engines: CliCommandStatus[];
+  codexApp?: CodexAppStatus;
 }
 
 type ExternalAgentProviderAppType = CliAppType;
+
+type CodexAppStatusPhase = 'missing' | 'ready' | 'starting' | 'error';
+
+interface CodexAppStatus {
+  phase: CodexAppStatusPhase;
+  cliFound: boolean;
+  cliPath: string | null;
+  cliVersion: string | null;
+  appInstalled: boolean;
+  appPath: string | null;
+  appRunning: boolean;
+  socketPath: string | null;
+  appServerSupported: boolean;
+  message: string;
+  error?: string;
+}
+
+interface CodexAppTaskSyncResult {
+  synced: number;
+  imported: number;
+  updated: number;
+  lastSyncAt: number;
+}
 
 type ExternalAgentCliInstallPhase =
   | 'starting'
@@ -331,6 +370,49 @@ interface Skill {
   updatedAt: number;
   prompt: string;
   skillPath: string;
+  version?: string;
+}
+
+interface MarketTag {
+  id: string;
+  en: string;
+  zh: string;
+}
+
+interface MarketplaceSkill {
+  id: string;
+  name: string;
+  description: string | { en: string; zh: string };
+  tags?: string[];
+  url: string;
+  version?: string;
+  slug?: string;
+  category?: string;
+  sourceType?: SkillMarketplaceSourceType;
+  rating?: number;
+  stars?: number;
+  hotScore?: number;
+  source: {
+    from: string;
+    url: string;
+    author?: string;
+  };
+}
+
+interface SkillMarketplaceOptions {
+  query?: string;
+  category?: string;
+  sort?: SkillMarketplaceSort;
+  limit?: number;
+}
+
+interface SkillMarketplaceResponse {
+  success: boolean;
+  skills?: MarketplaceSkill[];
+  tags?: MarketTag[];
+  cached?: boolean;
+  updatedAt?: number;
+  error?: string;
 }
 
 type EmailConnectivityCheckCode = 'imap_connection' | 'smtp_connection';
@@ -408,7 +490,13 @@ interface McpMarketplaceData {
 
 import type { Platform } from '@shared/platform';
 
-import type { Agent, PresetAgent } from './agent';
+import type {
+  Agent,
+  AgentTeam,
+  CreateAgentTeamRequest,
+  PresetAgent,
+  UpdateAgentTeamRequest,
+} from './agent';
 
 interface CreditItem {
   type: 'subscription' | 'boost' | 'free';
@@ -449,6 +537,9 @@ interface IElectronAPI {
       skillId: string,
       config: Record<string, string>
     ) => Promise<{ success: boolean; result?: EmailConnectivityTestResult; error?: string }>;
+    fetchMarketplace: (options?: SkillMarketplaceOptions) => Promise<SkillMarketplaceResponse>;
+    searchMarketplace: (options?: SkillMarketplaceOptions) => Promise<SkillMarketplaceResponse>;
+    installMarketplaceSkill: (skill: MarketplaceSkill) => Promise<{ success: boolean; skills?: Skill[]; error?: string; auditReport?: any; pendingInstallId?: string }>;
     onChanged: (callback: () => void) => () => void;
   };
   mcp: {
@@ -465,11 +556,17 @@ interface IElectronAPI {
   agents: {
     list: () => Promise<Agent[]>;
     get: (id: string) => Promise<Agent | null>;
-    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
-    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => Promise<Agent>;
+    create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; agentEngine?: CoworkAgentEngine; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
+    update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; agentEngine?: CoworkAgentEngine; icon?: string; skillIds?: string[]; enabled?: boolean }) => Promise<Agent>;
     delete: (id: string) => Promise<void>;
     presets: () => Promise<PresetAgent[]>;
     addPreset: (presetId: string) => Promise<Agent>;
+    listTeams: () => Promise<AgentTeam[]>;
+    getTeam: (id: string) => Promise<AgentTeam | null>;
+    createTeam: (request: CreateAgentTeamRequest) => Promise<AgentTeam | null>;
+    updateTeam: (id: string, updates: UpdateAgentTeamRequest) => Promise<AgentTeam | null>;
+    deleteTeam: (id: string) => Promise<boolean>;
+    installDevelopmentTeam: () => Promise<AgentTeam | null>;
   };
   api: {
     fetch: (options: {
@@ -514,6 +611,16 @@ interface IElectronAPI {
       onProgress: (callback: (status: HermesEngineStatus) => void) => () => void;
     };
   };
+  codexApp: {
+    engine: {
+      getStatus: () => Promise<{ success: boolean; status?: CodexAppStatus; error?: string }>;
+      start: () => Promise<{ success: boolean; status?: CodexAppStatus; error?: string }>;
+    };
+    tasks: {
+      sync: (input?: { cwd?: string; includeAll?: boolean; limit?: number }) => Promise<{ success: boolean; result?: CodexAppTaskSyncResult; error?: string }>;
+      open: (input: { threadId: string }) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
+    };
+  };
   ipcRenderer: {
     send: (channel: string, ...args: any[]) => void;
     on: (channel: string, func: (...args: any[]) => void) => () => void;
@@ -527,7 +634,7 @@ interface IElectronAPI {
     onStateChanged: (callback: (state: WindowState) => void) => () => void;
   };
   cowork: {
-    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[]; agentId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
+    startSession: (options: { prompt: string; cwd?: string; systemPrompt?: string; title?: string; activeSkillIds?: string[]; agentId?: string; teamId?: string; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
     continueSession: (options: { sessionId: string; prompt: string; systemPrompt?: string; activeSkillIds?: string[]; imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }> }) => Promise<{ success: boolean; session?: CoworkSession; error?: string; code?: string; engineStatus?: OpenClawEngineStatus }>;
     stopSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
@@ -561,6 +668,7 @@ interface IElectronAPI {
     getRuntimeMetricsSummary: (filters: RuntimeMetricsFilters) => Promise<{ success: boolean; summary?: RuntimeMetricsSummary; error?: string }>;
     listRuntimeCalls: (filters: RuntimeMetricsFilters) => Promise<{ success: boolean; total?: number; calls?: RuntimeCallRecord[]; error?: string }>;
     getRuntimeCallDetail: (callId: string) => Promise<{ success: boolean; call?: RuntimeCallRecord | null; error?: string }>;
+    ensureStudioAssets: () => Promise<CoworkStudioAssetsResult>;
     installAgentCli: (appType: ExternalAgentProviderAppType) => Promise<ExternalAgentCliInstallResult>;
     listAgentProviders: (appType: ExternalAgentProviderAppType) => Promise<ExternalAgentProviderListResult>;
     saveAgentProvider: (input: ExternalAgentProviderInput) => Promise<ExternalAgentProviderListResult>;
@@ -591,6 +699,7 @@ interface IElectronAPI {
     writeBootstrapFile: (filename: string, content: string) => Promise<{ success: boolean; error?: string }>;
     onStreamMessage: (callback: (data: { sessionId: string; message: CoworkMessage }) => void) => () => void;
     onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string }) => void) => () => void;
+    onStreamFileActivity: (callback: (data: { sessionId: string; activity: CoworkFileActivity }) => void) => () => void;
     onStreamPermission: (callback: (data: { sessionId: string; request: CoworkPermissionRequest }) => void) => () => void;
     onStreamPermissionDismiss: (callback: (data: { requestId: string }) => void) => () => void;
     onStreamComplete: (callback: (data: { sessionId: string; claudeSessionId: string | null }) => void) => () => void;
@@ -685,6 +794,21 @@ interface IElectronAPI {
       status?: FeishuOpenClawLocalStatus;
       error?: string;
     }>;
+    setFeishuRuntimeOwnership: (input: {
+      engineKey: FeishuEngineKeyType;
+      ownership: FeishuRuntimeOwnershipType;
+    }) => Promise<{
+      success: boolean;
+      ownership?: FeishuRuntimeOwnershipType;
+      status?: FeishuRuntimeOwnershipStatus;
+      error?: string;
+    }>;
+    refreshFeishuRuntimeOwnership: (engineKey?: FeishuEngineKeyType) => Promise<{
+      success: boolean;
+      ownership?: FeishuRuntimeOwnershipType;
+      status?: FeishuRuntimeOwnershipStatus;
+      error?: string;
+    }>;
     addDingTalkInstance: (name: string) => Promise<{ success: boolean; instance?: DingTalkInstanceConfig; error?: string }>;
     deleteDingTalkInstance: (instanceId: string) => Promise<{ success: boolean; error?: string }>;
     setDingTalkInstanceConfig: (instanceId: string, config: any, options?: { syncGateway?: boolean }) => Promise<{ success: boolean; error?: string }>;
@@ -749,7 +873,11 @@ interface IElectronAPI {
     getBounds: () => Promise<{ x: number; y: number; width: number; height: number } | null>;
     setPosition: (position: PetPosition & { persist?: boolean }) => Promise<{ x: number; y: number; width: number; height: number } | null>;
     openMainWindow: () => Promise<boolean>;
+    getTaskSnapshot: () => Promise<DesktopPetTaskSnapshot | null>;
+    openTask: (sessionId: string) => Promise<boolean>;
     onConfigChanged: (callback: (config: PetConfig) => void) => () => void;
+    onTaskChanged: (callback: (snapshot: DesktopPetTaskSnapshot | null) => void) => () => void;
+    onOpenTaskRequested: (callback: (data: { sessionId: string }) => void) => () => void;
   };
   networkStatus: {
     send: (status: 'online' | 'offline') => void;
@@ -926,6 +1054,7 @@ interface FeishuMultiInstanceStatus {
   openClawLocal?: FeishuOpenClawLocalStatus;
   profiles?: Partial<Record<FeishuEngineKeyType, FeishuProfileStatus>>;
   conflicts?: FeishuAppConflict[];
+  runtimeOwnership?: Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipStatus>>;
 }
 
 interface FeishuProfileStatus {
@@ -948,6 +1077,18 @@ interface FeishuOpenClawLocalStatus {
   domain: string | null;
   appIdPreview: string | null;
   secretNeedsInput: boolean;
+  message: string | null;
+}
+
+interface FeishuRuntimeOwnershipStatus {
+  engineKey: FeishuEngineKeyType;
+  ownership: FeishuRuntimeOwnershipType;
+  launchAgentInstalled: boolean;
+  launchAgentLoaded: boolean;
+  launchAgentLabel: string | null;
+  plistPath: string | null;
+  scriptPath: string | null;
+  configPath: string | null;
   message: string | null;
 }
 
@@ -1113,6 +1254,7 @@ interface IMSettings {
   systemPrompt?: string;
   skillsEnabled: boolean;
   feishuManagementMode?: FeishuManagementModeType;
+  feishuOwnershipByEngine?: Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipType>>;
 }
 
 interface IMGatewayStatus {

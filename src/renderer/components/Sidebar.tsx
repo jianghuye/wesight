@@ -1,17 +1,18 @@
-import { ChartBarIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import React, { useCallback,useEffect, useState } from 'react';
+import { ChartBarIcon, CheckIcon, ChevronDownIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { AgentRunTargetType } from '@shared/cowork/constants';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
 import { agentService } from '../services/agent';
 import { coworkService } from '../services/cowork';
 import { i18nService } from '../services/i18n';
 import { RootState } from '../store';
+import { getAgentDisplayName, isDefaultAgent } from '../utils/defaultAgentDisplay';
+import DefaultAgentIcon from './agent/DefaultAgentIcon';
 import Modal from './common/Modal';
 import CoworkSearchModal from './cowork/CoworkSearchModal';
 import CoworkSessionList from './cowork/CoworkSessionList';
-import ClockIcon from './icons/ClockIcon';
 import ComposeIcon from './icons/ComposeIcon';
-import ConnectorIcon from './icons/ConnectorIcon';
 import PuzzleIcon from './icons/PuzzleIcon';
 import SearchIcon from './icons/SearchIcon';
 import SidebarToggleIcon from './icons/SidebarToggleIcon';
@@ -22,13 +23,12 @@ import LoginButton from './LoginButton';
 interface SidebarProps {
   onShowSettings: () => void;
   onShowLogin?: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'runtime' | 'mcp' | 'agents';
+  activeView: 'cowork' | 'skills' | 'runtime' | 'agents';
   onShowSkills: () => void;
   onShowCowork: () => void;
-  onShowScheduledTasks: () => void;
   onShowRuntimeDashboard: () => void;
-  onShowMcp: () => void;
   onShowAgents: () => void;
+  onShowAgentSettings: () => void;
   onNewChat: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -41,10 +41,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   activeView,
   onShowSkills,
   onShowCowork,
-  onShowScheduledTasks,
   onShowRuntimeDashboard,
-  onShowMcp,
   onShowAgents,
+  onShowAgentSettings,
   onNewChat,
   isCollapsed,
   onToggleCollapse,
@@ -52,15 +51,28 @@ const Sidebar: React.FC<SidebarProps> = ({
   hideLogin,
 }) => {
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const currentTeamId = useSelector((state: RootState) => state.agent.currentTeamId);
+  const currentTargetType = useSelector((state: RootState) => state.agent.currentTargetType);
   const sessions = useSelector((state: RootState) => state.cowork.sessions);
-  const filteredSessions = sessions.filter((s) => !s.agentId || s.agentId === currentAgentId);
+  const activeTargetId = currentTargetType === AgentRunTargetType.Team && currentTeamId
+    ? `team:${currentTeamId}`
+    : currentAgentId;
+  const filteredSessions = sessions.filter((s) => !s.agentId || s.agentId === activeTargetId);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [, forceLanguageRefresh] = useState(0);
   const isMac = window.electron.platform === 'darwin';
+
+  useEffect(() => {
+    const unsubscribe = i18nService.subscribe(() => {
+      forceLanguageRefresh((prev) => prev + 1);
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     const handleSearch = () => {
@@ -190,21 +202,6 @@ const Sidebar: React.FC<SidebarProps> = ({
             type="button"
             onClick={() => {
               setIsSearchOpen(false);
-              onShowScheduledTasks();
-            }}
-            className={`w-full inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
-              activeView === 'scheduledTasks'
-                ? 'bg-primary/10 text-primary hover:bg-primary/20'
-                : 'text-secondary hover:text-foreground hover:bg-surface-raised'
-            }`}
-          >
-            <ClockIcon className="h-4 w-4" />
-            {i18nService.t('scheduledTasks')}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setIsSearchOpen(false);
               onShowRuntimeDashboard();
             }}
             className={`w-full inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
@@ -235,21 +232,6 @@ const Sidebar: React.FC<SidebarProps> = ({
             type="button"
             onClick={() => {
               setIsSearchOpen(false);
-              onShowMcp();
-            }}
-            className={`w-full inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
-              activeView === 'mcp'
-                ? 'bg-primary/10 text-primary hover:bg-primary/20'
-                : 'text-secondary hover:text-foreground hover:bg-surface-raised'
-            }`}
-          >
-            <ConnectorIcon className="h-4 w-4" />
-            {i18nService.t('mcpServers')}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setIsSearchOpen(false);
               onShowAgents();
             }}
             className={`w-full inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
@@ -259,13 +241,14 @@ const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             <UserGroupIcon className="h-4 w-4" />
-            {i18nService.t('myAgents')}
+            {i18nService.t('agentTeams')}
           </button>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-2.5 pb-4">
-        <SidebarAgentList
+        <SidebarRunTargetSwitcher
           onShowCowork={onShowCowork}
+          onManageAgents={onShowAgentSettings}
           onSessionsLoadingChange={setSessionsLoading}
         />
         <div className="px-3 pb-2 text-sm font-medium text-secondary">
@@ -384,23 +367,58 @@ const Sidebar: React.FC<SidebarProps> = ({
   );
 };
 
-/* ── Simplified agent list for sidebar quick-switch ─── */
+/* ── Current run target quick-switch ─── */
 
-const SidebarAgentList: React.FC<{
+const SidebarRunTargetSwitcher: React.FC<{
   onShowCowork: () => void;
+  onManageAgents: () => void;
   onSessionsLoadingChange: (loading: boolean) => void;
-}> = ({ onShowCowork, onSessionsLoadingChange }) => {
+}> = ({ onShowCowork, onManageAgents, onSessionsLoadingChange }) => {
   const agents = useSelector((state: RootState) => state.agent.agents);
+  const teams = useSelector((state: RootState) => state.agent.teams);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const currentTeamId = useSelector((state: RootState) => state.agent.currentTeamId);
+  const currentTargetType = useSelector((state: RootState) => state.agent.currentTargetType);
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     agentService.loadAgents();
   }, []);
 
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!dropdownRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [isOpen]);
+
   const enabledAgents = agents.filter((a) => a.enabled);
+  const enabledTeams = teams.filter((team) => team.enabled);
+  const currentAgent = enabledAgents.find((agent) => agent.id === currentAgentId) ?? enabledAgents[0] ?? null;
+  const currentTeam = currentTeamId
+    ? enabledTeams.find((team) => team.id === currentTeamId) ?? null
+    : null;
+  const isTeamTarget = currentTargetType === AgentRunTargetType.Team && currentTeam;
+  const currentTargetIcon = isTeamTarget
+    ? currentTeam.icon || '👥'
+    : currentAgent?.icon || '🤖';
+  const currentTargetLabel = isTeamTarget
+    ? currentTeam.name
+    : currentAgent ? getAgentDisplayName(currentAgent) : i18nService.t('agentSwitcherEmpty');
+  const currentTargetMeta = isTeamTarget
+    ? `${currentTeam.members.length}${i18nService.t('agentTeamMemberUnit')}`
+    : i18nService.t('agentRunTargetAgents');
 
   const handleSwitch = async (agentId: string) => {
-    if (agentId === currentAgentId) return;
+    setIsOpen(false);
+    if (currentTargetType === AgentRunTargetType.Agent && agentId === currentAgentId) return;
     agentService.switchAgent(agentId);
     onShowCowork();
     onSessionsLoadingChange(true);
@@ -411,24 +429,125 @@ const SidebarAgentList: React.FC<{
     }
   };
 
+  const handleSwitchTeam = async (teamId: string) => {
+    setIsOpen(false);
+    if (currentTargetType === AgentRunTargetType.Team && teamId === currentTeamId) return;
+    agentService.switchTeam(teamId);
+    onShowCowork();
+    onSessionsLoadingChange(true);
+    try {
+      await coworkService.loadSessions(`team:${teamId}`);
+    } finally {
+      onSessionsLoadingChange(false);
+    }
+  };
+
   return (
-    <div className="px-3 pb-2">
-      <div className="space-y-0.5">
-        {enabledAgents.map((agent) => (
-          <div
-            key={agent.id}
-            className={`group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm cursor-pointer transition-colors ${
-              currentAgentId === agent.id
-                ? 'bg-primary/10 text-primary'
-                : 'text-secondary hover:bg-surface-raised'
-            }`}
-            onClick={() => handleSwitch(agent.id)}
-          >
-            <span className="text-base leading-none">{agent.icon || (agent.id === 'main' ? '🦞' : '🤖')}</span>
-            <span className="truncate flex-1 text-xs font-medium">{agent.name}</span>
-          </div>
-        ))}
+    <div ref={dropdownRef} className="relative px-3 pb-3">
+      <div className="mb-1.5 px-1 text-[11px] font-medium text-muted">
+        {i18nService.t('currentRunTarget')}
       </div>
+      <button
+        type="button"
+        onClick={() => setIsOpen((value) => !value)}
+        className="flex w-full items-center gap-2 rounded-lg border border-transparent bg-background/70 px-2 py-1.5 text-left text-sm text-foreground shadow-sm transition-colors hover:border-border hover:bg-surface"
+        aria-label={i18nService.t('agentSwitcherAria')}
+        aria-expanded={isOpen}
+      >
+        {!isTeamTarget && currentAgent && isDefaultAgent(currentAgent.id) ? (
+          <DefaultAgentIcon size={22} className="-ml-0.5 w-5" />
+        ) : (
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-base leading-none">
+            {currentTargetIcon}
+          </span>
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium">{currentTargetLabel}</span>
+          <span className="block truncate text-[10px] text-muted">{currentTargetMeta}</span>
+        </span>
+        <ChevronDownIcon
+          className={`h-3.5 w-3.5 shrink-0 text-secondary transition-transform ${isOpen ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {isOpen && (enabledAgents.length > 0 || enabledTeams.length > 0) && (
+        <div className="absolute left-3 right-3 top-[calc(100%-8px)] z-20 rounded-xl border border-border bg-background p-1 shadow-lg">
+          {enabledAgents.length > 0 && (
+            <div className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted">
+              {i18nService.t('agentRunTargetAgents')}
+            </div>
+          )}
+          {enabledAgents.map((agent) => (
+            <button
+              type="button"
+              key={agent.id}
+              className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${
+                currentTargetType === AgentRunTargetType.Agent && currentAgentId === agent.id
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-secondary hover:bg-surface-raised'
+              }`}
+              onClick={() => handleSwitch(agent.id)}
+            >
+              {isDefaultAgent(agent.id) ? (
+                <DefaultAgentIcon size={20} className="-ml-0.5 w-5" />
+              ) : (
+                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-base leading-none">
+                  {agent.icon || '🤖'}
+                </span>
+            )}
+            <span className="truncate flex-1 text-xs font-medium">{getAgentDisplayName(agent)}</span>
+            {currentTargetType === AgentRunTargetType.Agent && currentAgentId === agent.id && (
+              <CheckIcon className="h-3.5 w-3.5 shrink-0" />
+            )}
+          </button>
+          ))}
+          {enabledTeams.length > 0 && (
+            <>
+              <div className="my-1 border-t border-border" />
+              <div className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted">
+                {i18nService.t('agentRunTargetTeams')}
+              </div>
+              {enabledTeams.map((team) => (
+                <button
+                  type="button"
+                  key={team.id}
+                  className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${
+                    currentTargetType === AgentRunTargetType.Team && currentTeamId === team.id
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-secondary hover:bg-surface-raised'
+                  }`}
+                  onClick={() => handleSwitchTeam(team.id)}
+                >
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-base leading-none">
+                    {team.icon || '👥'}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">{team.name}</span>
+                    <span className="block truncate text-[10px] text-muted">
+                      {team.members.length}{i18nService.t('agentTeamMemberUnit')}
+                    </span>
+                  </span>
+                  {currentTargetType === AgentRunTargetType.Team && currentTeamId === team.id && (
+                    <CheckIcon className="h-3.5 w-3.5 shrink-0" />
+                  )}
+                </button>
+              ))}
+            </>
+          )}
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm font-medium text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+            onClick={() => {
+              setIsOpen(false);
+              onManageAgents();
+            }}
+          >
+            <UserGroupIcon className="h-4 w-4 shrink-0" />
+            <span className="truncate text-xs">{i18nService.t('manageAgentsAndTeams')}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,13 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { agentService } from '../../services/agent';
-import { imService } from '../../services/im';
-import { i18nService } from '../../services/i18n';
 import { XMarkIcon } from '@heroicons/react/24/outline';
+import {
+  type CoworkAgentEngine as CoworkAgentEngineType,
+  DefaultCoworkAgentEngine,
+} from '@shared/cowork/constants';
+import React, { useEffect, useState } from 'react';
+
+import { agentService } from '../../services/agent';
+import { i18nService } from '../../services/i18n';
+import { imService } from '../../services/im';
+import type { IMGatewayConfig,IMPlatform } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
-import type { IMPlatform, IMGatewayConfig } from '../../types/im';
+import Modal from '../common/Modal';
+import AgentEngineSelect from './AgentEngineSelect';
 import AgentSkillSelector from './AgentSkillSelector';
 import EmojiPicker from './EmojiPicker';
-import Modal from '../common/Modal';
 
 type CreateTab = 'basic' | 'skills' | 'im';
 
@@ -34,6 +40,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
+  const [agentEngine, setAgentEngine] = useState<CoworkAgentEngineType>(DefaultCoworkAgentEngine);
   const [icon, setIcon] = useState('');
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
@@ -57,6 +64,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
     setDescription('');
     setSystemPrompt('');
     setIdentity('');
+    setAgentEngine(DefaultCoworkAgentEngine);
     setIcon('');
     setSkillIds([]);
     setActiveTab('basic');
@@ -72,6 +80,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
         description: description.trim(),
         systemPrompt: systemPrompt.trim(),
         identity: identity.trim(),
+        agentEngine,
         icon: icon.trim() || undefined,
         skillIds,
       });
@@ -80,7 +89,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
         if (boundPlatforms.size > 0 && imConfig) {
           const currentBindings = { ...(imConfig.settings?.platformAgentBindings || {}) };
           for (const platform of boundPlatforms) {
-            currentBindings[platform] = agent.id;
+            currentBindings[platform] = `agent:${agent.id}`;
           }
           await imService.persistConfig({
             settings: { ...imConfig.settings, platformAgentBindings: currentBindings },
@@ -184,6 +193,15 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({ isOpen, onClose }) 
                   placeholder={i18nService.t('agentDescriptionPlaceholder') || 'Brief description'}
                   className="w-full px-3 py-2 rounded-lg border border-border bg-transparent text-foreground text-sm"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-secondary mb-1">
+                  {i18nService.t('agentEngineField')}
+                </label>
+                <AgentEngineSelect value={agentEngine} onChange={setAgentEngine} />
+                <p className="mt-1 text-xs text-secondary/60">
+                  {i18nService.t('agentEngineFieldHint')}
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-secondary mb-1">

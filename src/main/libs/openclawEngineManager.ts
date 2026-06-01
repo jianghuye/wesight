@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from 'child_process';
+import { type ChildProcess, spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
 import { app } from 'electron';
 import { EventEmitter } from 'events';
@@ -23,6 +23,7 @@ import { isSystemProxyEnabled, resolveSystemProxyUrl } from './systemProxy';
 const GATEWAY_BOOT_TIMEOUT_MS = 120 * 1000;
 const GATEWAY_MAX_RESTART_ATTEMPTS = 3;
 const GATEWAY_RESTART_DELAYS = [3_000, 8_000, 15_000];
+const RUNNING_GATEWAY_RECHECK_MS = 60_000;
 
 export type OpenClawEnginePhase =
   | 'not_installed'
@@ -88,6 +89,17 @@ const isPortReachable = (host: string, port: number, timeoutMs = 1200): Promise<
   });
 };
 
+const waitForPortFree = async (host: string, port: number, timeoutMs = 10_000): Promise<boolean> => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!await isPortReachable(host, port, 500)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return !await isPortReachable(host, port, 500);
+};
+
 const isGatewayProcessAlive = (child: ChildProcess | null): child is ChildProcess => {
   return Boolean(child && child.pid && child.exitCode === null);
 };
@@ -113,7 +125,9 @@ export class OpenClawEngineManager extends EventEmitter {
   private gatewayPort: number | null = null;
   private startGatewayPromise: Promise<OpenClawEngineStatus> | null = null;
   private secretEnvVars: Record<string, string> = {};
+  private requireManagedGateway = false;
   private lastProbe: OpenClawGatewayProbeSummary | null = null;
+  private lastRunningGatewayCheckAt = 0;
 
   constructor() {
     super();
@@ -150,6 +164,10 @@ export class OpenClawEngineManager extends EventEmitter {
 
   getSecretEnvVars(): Record<string, string> {
     return this.secretEnvVars;
+  }
+
+  setRequireManagedGateway(value: boolean): void {
+    this.requireManagedGateway = value;
   }
 
   override on<U extends keyof OpenClawEngineManagerEvents>(
@@ -261,6 +279,9 @@ export class OpenClawEngineManager extends EventEmitter {
   }
 
   async startGateway(): Promise<OpenClawEngineStatus> {
+    if (this.isRunningGatewayRecentlyChecked()) {
+      return this.getStatus();
+    }
     if (this.startGatewayPromise) {
       return this.startGatewayPromise;
     }
@@ -294,7 +315,11 @@ export class OpenClawEngineManager extends EventEmitter {
 
     const runningProbe = probeOpenClawGateway(runtime.commandPath);
     this.lastProbe = runningProbe;
-    if (runningProbe.ok && (runningProbe.port === null || runningProbe.port === port || await isPortReachable('127.0.0.1', runningProbe.port))) {
+    if (
+      !this.requireManagedGateway
+      && runningProbe.ok
+      && (runningProbe.port === null || runningProbe.port === port || await isPortReachable('127.0.0.1', runningProbe.port))
+    ) {
       this.gatewayMode = 'attached';
       this.gatewayRestartAttempt = 0;
       this.setStatus({
@@ -310,10 +335,27 @@ export class OpenClawEngineManager extends EventEmitter {
         feishuConfigured: runningProbe.feishuConfigured,
         feishuRunning: runningProbe.feishuRunning,
       });
+      this.markRunningGatewayChecked();
       return this.getStatus();
     }
 
-    if (await isPortReachable('127.0.0.1', port)) {
+    if (this.requireManagedGateway && !isGatewayProcessAlive(this.gatewayProcess) && await isPortReachable('127.0.0.1', port)) {
+      this.setStatus({
+        ...this.buildStatusBase(),
+        phase: 'starting',
+        version: runtime.version,
+        progressPercent: 5,
+        message: 'Stopping local OpenClaw gateway service before starting WeSight-managed gateway...',
+        canRetry: false,
+        gatewayMode: 'managed',
+        gatewayPort: port,
+      });
+      this.stopExternalGatewayService(runtime.commandPath, runtime.configPath);
+      await waitForPortFree('127.0.0.1', port, 12_000);
+    }
+
+    const portReachable = await isPortReachable('127.0.0.1', port);
+    if (portReachable && !this.requireManagedGateway) {
       this.setStatus({
         ...this.buildStatusBase(),
         phase: 'error',
@@ -326,6 +368,7 @@ export class OpenClawEngineManager extends EventEmitter {
     }
 
     if (isGatewayProcessAlive(this.gatewayProcess)) {
+      this.markRunningGatewayChecked();
       return this.getStatus();
     }
 
@@ -342,7 +385,17 @@ export class OpenClawEngineManager extends EventEmitter {
     });
 
     const env = await this.buildGatewayEnv(runtime, port, token);
-    const child = spawn(runtime.commandPath, ['gateway', '--port', String(port), '--token', token, '--bind', 'loopback'], {
+    const args = [
+      'gateway',
+      ...(this.requireManagedGateway && portReachable ? ['--force'] : []),
+      '--port',
+      String(port),
+      '--token',
+      token,
+      '--bind',
+      'loopback',
+    ];
+    const child = spawn(runtime.commandPath, args, {
       cwd: path.dirname(runtime.configPath),
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -383,12 +436,14 @@ export class OpenClawEngineManager extends EventEmitter {
       feishuConfigured: probe.feishuConfigured,
       feishuRunning: probe.feishuRunning,
     });
+    this.markRunningGatewayChecked();
 
     return this.getStatus();
   }
 
   async stopGateway(): Promise<void> {
     this.shutdownRequested = true;
+    this.lastRunningGatewayCheckAt = 0;
     if (this.gatewayRestartTimer) {
       clearTimeout(this.gatewayRestartTimer);
       this.gatewayRestartTimer = null;
@@ -403,6 +458,7 @@ export class OpenClawEngineManager extends EventEmitter {
   }
 
   async restartGateway(): Promise<OpenClawEngineStatus> {
+    this.lastRunningGatewayCheckAt = 0;
     if (this.gatewayMode === 'managed' && this.gatewayProcess) {
       await this.stopGateway();
       this.gatewayRestartAttempt = 0;
@@ -474,6 +530,22 @@ export class OpenClawEngineManager extends EventEmitter {
     return token;
   }
 
+  private stopExternalGatewayService(commandPath: string, configPath: string): void {
+    const result = spawnSync(commandPath, ['gateway', 'stop'], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        PATH: buildOpenClawCommandPath(),
+        OPENCLAW_CONFIG_PATH: configPath,
+      },
+    });
+    if (result.status !== 0) {
+      const output = `${result.stderr || ''}${result.stdout || ''}`.trim();
+      console.warn('[OpenClaw] failed to stop local gateway service before managed start:', output || result.error);
+    }
+  }
+
   private readGatewayToken(): string | null {
     try {
       const token = fs.readFileSync(this.gatewayTokenPath, 'utf8').trim();
@@ -498,7 +570,7 @@ export class OpenClawEngineManager extends EventEmitter {
       OPENCLAW_GATEWAY_TOKEN: token,
       OPENCLAW_GATEWAY_PORT: String(port),
       OPENCLAW_NO_RESPAWN: '1',
-      OPENCLAW_LOG_LEVEL: 'debug',
+      OPENCLAW_LOG_LEVEL: process.env.WESIGHT_OPENCLAW_LOG_LEVEL || process.env.OPENCLAW_LOG_LEVEL || 'warn',
       ...this.secretEnvVars,
     };
     appendPythonRuntimeToEnv(env as Record<string, string | undefined>);
@@ -645,6 +717,20 @@ export class OpenClawEngineManager extends EventEmitter {
       if (this.shutdownRequested) return;
       void this.startGateway();
     }, delay);
+  }
+
+  private isRunningGatewayRecentlyChecked(): boolean {
+    if (this.status.phase !== 'running') {
+      return false;
+    }
+    if (this.gatewayMode !== 'managed' || !isGatewayProcessAlive(this.gatewayProcess)) {
+      return false;
+    }
+    return Date.now() - this.lastRunningGatewayCheckAt < RUNNING_GATEWAY_RECHECK_MS;
+  }
+
+  private markRunningGatewayChecked(): void {
+    this.lastRunningGatewayCheckAt = Date.now();
   }
 
   private setStatus(next: OpenClawEngineStatus): void {

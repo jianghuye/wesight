@@ -1,15 +1,38 @@
 import { store } from '../store';
 import {
+  addAgent,
+  addTeam,
+  removeAgent,
+  removeTeam,
   setAgents,
   setCurrentAgentId,
+  setCurrentTeamId,
   setLoading,
-  addAgent,
+  setTeams,
   updateAgent as updateAgentAction,
-  removeAgent,
+  updateTeam as updateTeamAction,
 } from '../store/slices/agentSlice';
-import { setActiveSkillIds, clearActiveSkills } from '../store/slices/skillSlice';
 import { clearCurrentSession } from '../store/slices/coworkSlice';
-import type { Agent, PresetAgent } from '../types/agent';
+import { clearActiveSkills,setActiveSkillIds } from '../store/slices/skillSlice';
+import type {
+  Agent,
+  AgentTeam,
+  CreateAgentTeamRequest,
+  PresetAgent,
+  UpdateAgentTeamRequest,
+} from '../types/agent';
+
+const toAgentSummary = (agent: Agent) => ({
+  id: agent.id,
+  name: agent.name,
+  description: agent.description,
+  icon: agent.icon,
+  agentEngine: agent.agentEngine,
+  enabled: agent.enabled,
+  isDefault: agent.isDefault,
+  source: agent.source,
+  skillIds: agent.skillIds ?? [],
+});
 
 class AgentService {
   async loadAgents(): Promise<void> {
@@ -17,16 +40,11 @@ class AgentService {
     try {
       const agents = await window.electron?.agents?.list();
       if (agents) {
-        store.dispatch(setAgents(agents.map((a) => ({
-          id: a.id,
-          name: a.name,
-          description: a.description,
-          icon: a.icon,
-          enabled: a.enabled,
-          isDefault: a.isDefault,
-          source: a.source,
-          skillIds: a.skillIds ?? [],
-        }))));
+        store.dispatch(setAgents(agents.map(toAgentSummary)));
+      }
+      const teams = await window.electron?.agents?.listTeams?.();
+      if (teams) {
+        store.dispatch(setTeams(teams));
       }
     } catch (error) {
       console.error('Failed to load agents:', error);
@@ -42,21 +60,13 @@ class AgentService {
     identity?: string;
     model?: string;
     icon?: string;
+    agentEngine?: Agent['agentEngine'];
     skillIds?: string[];
   }): Promise<Agent | null> {
     try {
       const agent = await window.electron?.agents?.create(request);
       if (agent) {
-        store.dispatch(addAgent({
-          id: agent.id,
-          name: agent.name,
-          description: agent.description,
-          icon: agent.icon,
-          enabled: agent.enabled,
-          isDefault: agent.isDefault,
-          source: agent.source,
-          skillIds: agent.skillIds ?? [],
-        }));
+        store.dispatch(addAgent(toAgentSummary(agent)));
         return agent;
       }
       return null;
@@ -73,6 +83,7 @@ class AgentService {
     identity?: string;
     model?: string;
     icon?: string;
+    agentEngine?: Agent['agentEngine'];
     skillIds?: string[];
     enabled?: boolean;
   }): Promise<Agent | null> {
@@ -81,13 +92,7 @@ class AgentService {
       if (agent) {
         store.dispatch(updateAgentAction({
           id: agent.id,
-          updates: {
-            name: agent.name,
-            description: agent.description,
-            icon: agent.icon,
-            enabled: agent.enabled,
-            skillIds: agent.skillIds ?? [],
-          },
+          updates: toAgentSummary(agent),
         }));
         return agent;
       }
@@ -129,16 +134,7 @@ class AgentService {
     try {
       const agent = await window.electron?.agents?.addPreset(presetId);
       if (agent) {
-        store.dispatch(addAgent({
-          id: agent.id,
-          name: agent.name,
-          description: agent.description,
-          icon: agent.icon,
-          enabled: agent.enabled,
-          isDefault: agent.isDefault,
-          source: agent.source,
-          skillIds: agent.skillIds ?? [],
-        }));
+        store.dispatch(addAgent(toAgentSummary(agent)));
         return agent;
       }
       return null;
@@ -154,6 +150,70 @@ class AgentService {
     const agent = store.getState().agent.agents.find((a) => a.id === agentId);
     if (agent?.skillIds?.length) {
       store.dispatch(setActiveSkillIds(agent.skillIds));
+    } else {
+      store.dispatch(clearActiveSkills());
+    }
+  }
+
+  async createTeam(request: CreateAgentTeamRequest): Promise<AgentTeam | null> {
+    try {
+      const team = await window.electron?.agents?.createTeam?.(request);
+      if (team) {
+        store.dispatch(addTeam(team));
+        return team;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to create team:', error);
+      return null;
+    }
+  }
+
+  async updateTeam(id: string, updates: UpdateAgentTeamRequest): Promise<AgentTeam | null> {
+    try {
+      const team = await window.electron?.agents?.updateTeam?.(id, updates);
+      if (team) {
+        store.dispatch(updateTeamAction({ id: team.id, updates: team }));
+        return team;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to update team:', error);
+      return null;
+    }
+  }
+
+  async deleteTeam(id: string): Promise<boolean> {
+    try {
+      await window.electron?.agents?.deleteTeam?.(id);
+      store.dispatch(removeTeam(id));
+      return true;
+    } catch (error) {
+      console.error('Failed to delete team:', error);
+      return false;
+    }
+  }
+
+  async installDevelopmentTeamTemplate(): Promise<AgentTeam | null> {
+    try {
+      const team = await window.electron?.agents?.installDevelopmentTeam?.();
+      if (team) {
+        await this.loadAgents();
+        return team;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to install development team:', error);
+      return null;
+    }
+  }
+
+  switchTeam(teamId: string): void {
+    store.dispatch(setCurrentTeamId(teamId));
+    store.dispatch(clearCurrentSession());
+    const team = store.getState().agent.teams.find((item) => item.id === teamId);
+    if (team?.skillIds?.length) {
+      store.dispatch(setActiveSkillIds(team.skillIds));
     } else {
       store.dispatch(clearActiveSkills());
     }

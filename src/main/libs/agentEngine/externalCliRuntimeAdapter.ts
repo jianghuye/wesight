@@ -13,13 +13,14 @@ import {
   OpenCodePermissionMode,
   QwenCodePermissionMode,
 } from '../../../shared/cowork/constants';
+import type { CoworkSessionRuntimeSnapshot } from '../../../shared/cowork/runtimeSnapshot';
 import type {
   CoworkMessage,
   CoworkMessageMetadata,
   CoworkStore,
 } from '../../coworkStore';
 import { t } from '../../i18n';
-import { resolveRawApiConfig } from '../claudeSettings';
+import { type ApiConfigOverride,resolveRawApiConfig } from '../claudeSettings';
 import { getEnhancedEnvWithTmpdir } from '../coworkUtil';
 import {
   applyLocalClaudeCodeEnvForPrintMode,
@@ -77,6 +78,7 @@ type ActiveCliSession = {
   assistantMessageId: string | null;
   assistantContent: string;
   stderrTail: string;
+  cliErrorMessage: string | null;
   sawEvent: boolean;
   sawClaudeVisibleOutput: boolean;
   startupTimer: ReturnType<typeof setTimeout> | null;
@@ -128,6 +130,21 @@ const firstNumber = (...values: unknown[]): number | null => {
     }
   }
   return null;
+};
+
+const getApiOverrideFromRuntimeSnapshot = (
+  snapshot?: CoworkSessionRuntimeSnapshot | null,
+): ApiConfigOverride | undefined => {
+  if (!snapshot || snapshot.configSource === ExternalAgentConfigSource.LocalCli) {
+    return undefined;
+  }
+  if (!snapshot.modelId && !snapshot.providerKey && !snapshot.providerName) {
+    return undefined;
+  }
+  return {
+    modelId: snapshot.modelId,
+    providerName: snapshot.providerKey || snapshot.providerName,
+  };
 };
 
 export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRuntime {
@@ -245,8 +262,10 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     const systemPrompt = options.systemPrompt ?? currentSession?.systemPrompt ?? '';
     const effectivePrompt = this.buildEffectivePrompt(sessionId, prompt, systemPrompt);
     const imagePaths = this.materializeImageAttachments(sessionId, options.imageAttachments);
+    const apiConfigOverride = getApiOverrideFromRuntimeSnapshot(options.runtimeSnapshot);
     const env = await getEnhancedEnvWithTmpdir(cwd, 'local', {
       injectCoworkModelConfig: this.shouldInjectCoworkModelConfig(),
+      apiConfigOverride,
     });
     let localClaudeConfig: LocalClaudeCodeEnvLoadResult | null = null;
     const selectedProvider = this.getSelectedProviderForLocalCli();
@@ -257,10 +276,10 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       this.applyCodexProviderEnvForExecMode(env, selectedProvider);
     }
     if (this.engine === CoworkAgentEngine.OpenCode && this.getConfigSource() === ExternalAgentConfigSource.WesightModel) {
-      this.applyOpenCodeRuntimeConfig(env);
+      this.applyOpenCodeRuntimeConfig(env, apiConfigOverride);
     }
     if (this.engine === CoworkAgentEngine.QwenCode && this.getConfigSource() === ExternalAgentConfigSource.WesightModel) {
-      this.applyQwenCodeRuntimeConfig(env);
+      this.applyQwenCodeRuntimeConfig(env, apiConfigOverride);
     }
     const command = this.getCommandName();
     const args = this.buildCommandArgs(
@@ -270,6 +289,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       selectedProvider,
       currentSession?.title ?? session.title,
       currentSession?.claudeSessionId ?? null,
+      apiConfigOverride,
     );
     const child = spawn(command, args, {
       cwd,
@@ -286,6 +306,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       assistantMessageId: null,
       assistantContent: '',
       stderrTail: '',
+      cliErrorMessage: null,
       sawEvent: false,
       sawClaudeVisibleOutput: false,
       startupTimer: null,
@@ -385,6 +406,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
 
         const detail = [
           `${this.getEngineDisplayName()} exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}.`,
+          active.cliErrorMessage ? `CLI error:\n${active.cliErrorMessage}` : '',
           active.stderrTail.trim() ? `Process stderr:\n${active.stderrTail.trim()}` : '',
         ].filter(Boolean).join('\n\n');
         this.handleError(sessionId, detail);
@@ -413,6 +435,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     selectedProvider: ExternalAgentProvider | null,
     sessionTitle: string,
     cliSessionId: string | null,
+    apiConfigOverride?: ApiConfigOverride,
   ): string[] {
     if (this.engine === CoworkAgentEngine.ClaudeCode) {
       const args = [
@@ -475,7 +498,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         args.push('--resume', cliSessionId);
       }
       if (this.getConfigSource() === ExternalAgentConfigSource.WesightModel) {
-        const resolved = resolveRawApiConfig();
+        const resolved = resolveRawApiConfig(apiConfigOverride);
         if (resolved.config) {
           args.push('--auth-type', qwenAuthTypeForCoworkConfig(resolved.config));
           args.push('--model', resolved.config.model);
@@ -487,6 +510,27 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         }
       }
       args.push('-p', promptWithFiles);
+      return args;
+    }
+
+    if (this.engine === CoworkAgentEngine.GrokBuild) {
+      const promptWithFiles = imagePaths.length > 0
+        ? `${prompt}\n\nAttached local files:\n${imagePaths.map((imagePath) => imagePath).join('\n')}`
+        : prompt;
+      const args = [
+        '--cwd',
+        cwd,
+        '--output-format',
+        'streaming-json',
+        '--no-auto-update',
+        '--always-approve',
+        '-p',
+        promptWithFiles,
+      ];
+      const model = selectedProvider?.summary.model?.trim();
+      if (model) {
+        args.splice(6, 0, '--model', model);
+      }
       return args;
     }
 
@@ -529,6 +573,9 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
   }
 
   private shouldInjectCoworkModelConfig(): boolean {
+    if (this.engine === CoworkAgentEngine.GrokBuild) {
+      return false;
+    }
     return this.getConfigSource() !== ExternalAgentConfigSource.LocalCli;
   }
 
@@ -545,6 +592,9 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     }
     if (this.engine === CoworkAgentEngine.QwenCode) {
       return config.qwenCodeConfigSource;
+    }
+    if (this.engine === CoworkAgentEngine.GrokBuild) {
+      return ExternalAgentConfigSource.LocalCli;
     }
     return ExternalAgentConfigSource.WesightModel;
   }
@@ -565,11 +615,17 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     if (this.engine === CoworkAgentEngine.QwenCode) {
       return this.getCurrentProvider?.('qwen') ?? null;
     }
+    if (this.engine === CoworkAgentEngine.GrokBuild) {
+      return this.getCurrentProvider?.('grok') ?? null;
+    }
     return null;
   }
 
-  private applyOpenCodeRuntimeConfig(env: Record<string, string | undefined>): void {
-    const resolved = resolveRawApiConfig();
+  private applyOpenCodeRuntimeConfig(
+    env: Record<string, string | undefined>,
+    apiConfigOverride?: ApiConfigOverride,
+  ): void {
+    const resolved = resolveRawApiConfig(apiConfigOverride);
     if (!resolved.config) return;
     env.OPENCODE_CONFIG_CONTENT = buildOpenCodeRuntimeConfigContent(
       resolved.config,
@@ -577,8 +633,11 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     );
   }
 
-  private applyQwenCodeRuntimeConfig(env: Record<string, string | undefined>): void {
-    const resolved = resolveRawApiConfig();
+  private applyQwenCodeRuntimeConfig(
+    env: Record<string, string | undefined>,
+    apiConfigOverride?: ApiConfigOverride,
+  ): void {
+    const resolved = resolveRawApiConfig(apiConfigOverride);
     if (!resolved.config) return;
     Object.assign(env, buildQwenCodeRuntimeEnv(resolved.config));
   }
@@ -587,6 +646,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     if (this.engine === CoworkAgentEngine.ClaudeCode) return 'claude';
     if (this.engine === CoworkAgentEngine.Codex) return 'codex';
     if (this.engine === CoworkAgentEngine.OpenCode) return 'opencode';
+    if (this.engine === CoworkAgentEngine.GrokBuild) return 'grok';
     return 'qwen';
   }
 
@@ -649,13 +709,21 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
 
   private buildEffectivePrompt(sessionId: string, prompt: string, systemPrompt: string): string {
     const history = this.buildHistoryContext(sessionId, prompt);
-    const runtimeNote = [
+    const runtimeNoteLines = [
       'Runtime note:',
       '- Use the user-level CLI configuration that the local engine already loads.',
       '- Project memory files such as SOUL.md, USER.md, MEMORY.md, and memory/YYYY-MM-DD.md are optional.',
       '- If an optional memory file is missing, skip it silently and continue.',
       '- Create memory files only when the user explicitly asks to remember or persist information.',
-    ].join('\n');
+    ];
+    if (this.engine === CoworkAgentEngine.ClaudeCode) {
+      runtimeNoteLines.push(
+        '- WeSight runs Claude Code as a graphical task executor. Do not enter planning-only flows or wait for plan approval.',
+        '- For build, edit, debug, or create requests, perform the work directly and report concrete results.',
+        '- Do not stop after writing a plan file. Create or modify the requested files and verify the result when possible.',
+      );
+    }
+    const runtimeNote = runtimeNoteLines.join('\n');
     return [
       runtimeNote,
       systemPrompt.trim() ? `System instructions:\n${systemPrompt.trim()}` : '',
@@ -800,6 +868,8 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         this.handleCodexEvent(active, event);
       } else if (this.engine === CoworkAgentEngine.OpenCode) {
         this.handleOpenCodeEvent(active, event);
+      } else if (this.engine === CoworkAgentEngine.GrokBuild) {
+        this.handleGrokBuildEvent(active, event);
       } else if (this.engine === CoworkAgentEngine.QwenCode) {
         this.handleQwenCodeEvent(active, event);
       } else {
@@ -1140,6 +1210,185 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     }
   }
 
+  private handleGrokBuildEvent(active: ActiveCliSession, event: unknown): void {
+    if (!isRecord(event)) return;
+    const type = String(event.type ?? event.event ?? event.kind ?? '').toLowerCase();
+    const payload = isRecord(event.payload) ? event.payload : {};
+    const item = isRecord(event.item) ? event.item : {};
+
+    const cliSessionId = firstString(
+      event.session_id,
+      event.sessionId,
+      event.thread_id,
+      event.threadId,
+      event.conversation_id,
+      event.conversationId,
+      payload.session_id,
+      payload.sessionId,
+      item.session_id,
+      item.sessionId,
+    );
+    if (cliSessionId) {
+      active.cliSessionId = cliSessionId;
+      this.store.updateSession(active.sessionId, { claudeSessionId: cliSessionId });
+    }
+
+    if (type.includes('error') || event.error) {
+      this.handleError(active.sessionId, this.extractGrokBuildError(event) ?? 'Grok Build CLI returned an error.');
+      return;
+    }
+
+    if (this.isGrokBuildToolEvent(type, event, payload, item)) {
+      this.handleGrokBuildToolEvent(active, type, event, payload, item);
+      return;
+    }
+
+    if (type.includes('step') || type.includes('status') || type.includes('thinking')) {
+      const label = firstString(event.message, event.status, payload.message, item.message);
+      if (label) {
+        this.emit('runtimeMetric', active.sessionId, {
+          type: 'step',
+          label,
+        });
+      }
+    }
+
+    const text = this.extractGrokBuildText(event);
+    if (text) {
+      this.appendAssistant(active, text);
+    }
+  }
+
+  private isGrokBuildToolEvent(
+    type: string,
+    event: Record<string, unknown>,
+    payload: Record<string, unknown>,
+    item: Record<string, unknown>,
+  ): boolean {
+    return type.includes('tool')
+      || type.includes('command')
+      || type.includes('exec')
+      || type.includes('shell')
+      || isRecord(event.tool)
+      || isRecord(event.command)
+      || isRecord(payload.tool)
+      || isRecord(item.tool);
+  }
+
+  private handleGrokBuildToolEvent(
+    active: ActiveCliSession,
+    type: string,
+    event: Record<string, unknown>,
+    payload: Record<string, unknown>,
+    item: Record<string, unknown>,
+  ): void {
+    const commandRecord = isRecord(event.command)
+      ? event.command
+      : isRecord(payload.command)
+        ? payload.command
+        : isRecord(item.command)
+          ? item.command
+          : {};
+    const toolName = firstString(
+      event.tool_name,
+      event.toolName,
+      event.name,
+      payload.tool_name,
+      payload.toolName,
+      payload.name,
+      item.tool_name,
+      item.toolName,
+      item.name,
+      commandRecord.name,
+      commandRecord.command,
+    ) ?? 'Grok';
+    const output = firstString(
+      event.output,
+      event.result,
+      event.text,
+      payload.output,
+      payload.result,
+      payload.text,
+      item.output,
+      item.result,
+      item.text,
+      commandRecord.output,
+      commandRecord.result,
+    );
+    const completed = type.includes('finish')
+      || type.includes('complete')
+      || type.includes('result')
+      || type.includes('done')
+      || type.includes('failed')
+      || type.includes('error');
+
+    if (!completed) {
+      this.addToolMessage(active.sessionId, {
+        type: 'tool_use',
+        content: `Using tool: ${toolName}`,
+        metadata: {
+          toolName,
+          toolInput: isRecord(event.input)
+            ? event.input
+            : isRecord(payload.input)
+              ? payload.input
+              : isRecord(item.input)
+                ? item.input
+                : commandRecord,
+        },
+      });
+      return;
+    }
+
+    this.addToolMessage(active.sessionId, {
+      type: 'tool_result',
+      content: output ?? stringifyPayload(event),
+      metadata: {
+        toolName,
+        toolResult: output ?? stringifyPayload(event),
+        isError: type.includes('failed') || type.includes('error') || event.status === 'failed',
+      },
+    });
+  }
+
+  private extractGrokBuildError(event: Record<string, unknown>): string | null {
+    const error = event.error;
+    if (typeof error === 'string' && error.trim()) return error;
+    if (isRecord(error)) {
+      return firstString(error.message, error.error, error.detail);
+    }
+    return firstString(event.message, event.detail);
+  }
+
+  private extractGrokBuildText(value: unknown): string | null {
+    if (typeof value === 'string') {
+      return value.trim() ? value : null;
+    }
+    if (Array.isArray(value)) {
+      const parts = value
+        .map((item) => this.extractGrokBuildText(item))
+        .filter((item): item is string => Boolean(item));
+      return parts.length > 0 ? parts.join('') : null;
+    }
+    if (!isRecord(value)) return null;
+    const direct = firstString(
+      value.delta,
+      value.text,
+      value.content,
+      value.message,
+      value.output,
+      value.response,
+      value.result,
+    );
+    if (direct) return direct;
+    return this.extractGrokBuildText(value.delta)
+      ?? this.extractGrokBuildText(value.content)
+      ?? this.extractGrokBuildText(value.message)
+      ?? this.extractGrokBuildText(value.payload)
+      ?? this.extractGrokBuildText(value.item)
+      ?? this.extractGrokBuildText(value.data);
+  }
+
   private handleClaudeCliEvent(active: ActiveCliSession, event: unknown): void {
     if (!isRecord(event)) return;
     const type = String(event.type ?? '');
@@ -1155,6 +1404,13 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return;
     }
     if (type === 'assistant' && isRecord(event.message)) {
+      const cliError = this.extractClaudeCliError(event);
+      if (cliError) {
+        active.cliErrorMessage = cliError;
+        this.replaceAssistant(active, cliError, true);
+        this.markClaudeVisibleOutput(active);
+        return;
+      }
       if (this.handleClaudeMessage(active, event.message)) {
         this.markClaudeVisibleOutput(active);
       }
@@ -1170,6 +1426,28 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         this.handleError(active.sessionId, firstString(event.error) ?? 'Claude Code CLI run failed.');
       }
     }
+  }
+
+  private extractClaudeCliError(event: Record<string, unknown>): string | null {
+    const status = firstNumber(event.apiErrorStatus, event.status, event.status_code);
+    const explicitApiError = event.isApiErrorMessage === true || status !== null;
+    const message = isRecord(event.message) ? event.message : {};
+    const content = message.content;
+    let text: string | null = null;
+    if (Array.isArray(content)) {
+      const textBlock = content.find((block) => isRecord(block) && block.type === 'text') as Record<string, unknown> | undefined;
+      text = textBlock ? firstString(textBlock.text) : null;
+    } else {
+      text = firstString(content);
+    }
+    if (!text) {
+      text = firstString(event.error, event.message, event.result);
+    }
+    if (!text) return null;
+    if (explicitApiError || /^API Error:/i.test(text.trim())) {
+      return text.trim();
+    }
+    return null;
   }
 
   private handleClaudeStreamEvent(active: ActiveCliSession, event: Record<string, unknown>): boolean {
@@ -1260,8 +1538,19 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     sessionId: string,
     input: { type: CoworkMessage['type']; content: string; metadata?: CoworkMessageMetadata },
   ): void {
+    if (input.type === 'tool_use') {
+      this.splitAssistantSegmentBeforeTool(sessionId);
+    }
     const message = this.store.addMessage(sessionId, input);
     this.emit('message', sessionId, message);
+  }
+
+  private splitAssistantSegmentBeforeTool(sessionId: string): void {
+    const active = this.activeSessions.get(sessionId);
+    if (!active?.assistantMessageId) return;
+    this.finalizeAssistant(active);
+    active.assistantMessageId = null;
+    active.assistantContent = '';
   }
 
   private addSystemMessage(sessionId: string, content: string): void {
@@ -1318,6 +1607,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     if (this.engine === CoworkAgentEngine.ClaudeCode) return 'Claude Code CLI';
     if (this.engine === CoworkAgentEngine.Codex) return 'Codex CLI';
     if (this.engine === CoworkAgentEngine.OpenCode) return 'OpenCode CLI';
+    if (this.engine === CoworkAgentEngine.GrokBuild) return 'Grok Build CLI';
     return 'Qwen Code CLI';
   }
 }

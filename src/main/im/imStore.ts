@@ -11,8 +11,11 @@ import {
   type FeishuEngineKeyType,
   FeishuManagementMode,
   type FeishuManagementModeType,
+  FeishuRuntimeOwnership,
+  type FeishuRuntimeOwnershipType,
   isFeishuEngineKey,
   isFeishuManagementMode,
+  isFeishuRuntimeOwnership,
 } from '../../shared/im/constants';
 import { PlatformRegistry } from '../../shared/platform';
 import {
@@ -1125,12 +1128,68 @@ export class IMStore {
   }
 
   getFeishuManagementMode(): FeishuManagementModeType {
-    const mode = this.getIMSettings().feishuManagementMode;
+    const settings = this.getIMSettings();
+    const openClawOwnership = this.getFeishuRuntimeOwnership(FeishuEngineKey.OpenClaw);
+    if (openClawOwnership === FeishuRuntimeOwnership.WesightManaged) {
+      return FeishuManagementMode.WesightManaged;
+    }
+    const mode = settings.feishuManagementMode;
     return isFeishuManagementMode(mode) ? mode : FeishuManagementMode.LocalOpenClaw;
   }
 
   setFeishuManagementMode(mode: FeishuManagementModeType): void {
+    this.setFeishuRuntimeOwnership(
+      FeishuEngineKey.OpenClaw,
+      mode === FeishuManagementMode.WesightManaged
+        ? FeishuRuntimeOwnership.WesightManaged
+        : FeishuRuntimeOwnership.LocalRuntime,
+    );
     this.setIMSettings({ feishuManagementMode: mode });
+  }
+
+  getFeishuRuntimeOwnership(engineKey: FeishuEngineKeyType): FeishuRuntimeOwnershipType {
+    const normalizedEngineKey = isFeishuEngineKey(engineKey) ? engineKey : FeishuEngineKey.OpenClaw;
+    const settings = this.getIMSettings();
+    const stored = settings.feishuOwnershipByEngine?.[normalizedEngineKey];
+    if (isFeishuRuntimeOwnership(stored)) {
+      return stored;
+    }
+    if (normalizedEngineKey === FeishuEngineKey.OpenClaw) {
+      return settings.feishuManagementMode === FeishuManagementMode.WesightManaged
+        ? FeishuRuntimeOwnership.WesightManaged
+        : FeishuRuntimeOwnership.LocalRuntime;
+    }
+    return FeishuRuntimeOwnership.WesightManaged;
+  }
+
+  getFeishuRuntimeOwnershipByEngine(): Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipType>> {
+    const result: Partial<Record<FeishuEngineKeyType, FeishuRuntimeOwnershipType>> = {};
+    for (const engineKey of FEISHU_ENGINE_KEYS) {
+      result[engineKey] = this.getFeishuRuntimeOwnership(engineKey);
+    }
+    return result;
+  }
+
+  setFeishuRuntimeOwnership(engineKey: FeishuEngineKeyType, ownership: FeishuRuntimeOwnershipType): void {
+    const normalizedEngineKey = isFeishuEngineKey(engineKey) ? engineKey : FeishuEngineKey.OpenClaw;
+    const normalizedOwnership = isFeishuRuntimeOwnership(ownership)
+      ? ownership
+      : FeishuRuntimeOwnership.WesightManaged;
+    const settings = this.getIMSettings();
+    const nextOwnershipByEngine = {
+      ...(settings.feishuOwnershipByEngine || {}),
+      [normalizedEngineKey]: normalizedOwnership,
+    };
+    this.setIMSettings({
+      feishuOwnershipByEngine: nextOwnershipByEngine,
+      ...(normalizedEngineKey === FeishuEngineKey.OpenClaw
+        ? {
+          feishuManagementMode: normalizedOwnership === FeishuRuntimeOwnership.WesightManaged
+            ? FeishuManagementMode.WesightManaged
+            : FeishuManagementMode.LocalOpenClaw,
+        }
+        : {}),
+    });
   }
 
   // ==================== Utility ====================

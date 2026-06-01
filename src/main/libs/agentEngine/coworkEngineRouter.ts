@@ -23,7 +23,9 @@ type RouterDeps = {
   claudeRuntime: CoworkRuntime;
   claudeCodeRuntime: CoworkRuntime;
   codexRuntime: CoworkRuntime;
+  codexAppRuntime: CoworkRuntime;
   openCodeRuntime: CoworkRuntime;
+  grokBuildRuntime: CoworkRuntime;
   qwenCodeRuntime: CoworkRuntime;
   deepSeekTuiRuntime: CoworkRuntime;
   telemetryTracker?: RuntimeTelemetryTracker;
@@ -47,7 +49,9 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
       [CoworkAgentEngineValue.YdCowork]: deps.claudeRuntime,
       [CoworkAgentEngineValue.ClaudeCode]: deps.claudeCodeRuntime,
       [CoworkAgentEngineValue.Codex]: deps.codexRuntime,
+      [CoworkAgentEngineValue.CodexApp]: deps.codexAppRuntime,
       [CoworkAgentEngineValue.OpenCode]: deps.openCodeRuntime,
+      [CoworkAgentEngineValue.GrokBuild]: deps.grokBuildRuntime,
       [CoworkAgentEngineValue.QwenCode]: deps.qwenCodeRuntime,
       [CoworkAgentEngineValue.DeepSeekTui]: deps.deepSeekTuiRuntime,
     };
@@ -59,7 +63,9 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     this.bindRuntimeEvents(CoworkAgentEngineValue.YdCowork, deps.claudeRuntime);
     this.bindRuntimeEvents(CoworkAgentEngineValue.ClaudeCode, deps.claudeCodeRuntime);
     this.bindRuntimeEvents(CoworkAgentEngineValue.Codex, deps.codexRuntime);
+    this.bindRuntimeEvents(CoworkAgentEngineValue.CodexApp, deps.codexAppRuntime);
     this.bindRuntimeEvents(CoworkAgentEngineValue.OpenCode, deps.openCodeRuntime);
+    this.bindRuntimeEvents(CoworkAgentEngineValue.GrokBuild, deps.grokBuildRuntime);
     this.bindRuntimeEvents(CoworkAgentEngineValue.QwenCode, deps.qwenCodeRuntime);
     this.bindRuntimeEvents(CoworkAgentEngineValue.DeepSeekTui, deps.deepSeekTuiRuntime);
   }
@@ -79,7 +85,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
   }
 
   async startSession(sessionId: string, prompt: string, options: CoworkStartOptions = {}): Promise<void> {
-    const engine = this.safeResolveEngine();
+    const engine = this.resolveEngineForOptions(options.agentEngine);
     this.sessionEngine.set(sessionId, engine);
     this.telemetryTracker?.startTurn(sessionId, prompt, engine, options);
     try {
@@ -97,7 +103,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
   }
 
   async continueSession(sessionId: string, prompt: string, options: CoworkContinueOptions = {}): Promise<void> {
-    const engine = this.safeResolveEngine();
+    const engine = this.resolveEngineForOptions(options.agentEngine);
     this.sessionEngine.set(sessionId, engine);
     this.telemetryTracker?.startTurn(sessionId, prompt, engine, options);
     try {
@@ -261,5 +267,13 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     }
     this.currentEngine = CoworkAgentEngineValue.YdCowork;
     return CoworkAgentEngineValue.YdCowork;
+  }
+
+  private resolveEngineForOptions(engine: CoworkAgentEngine | undefined): CoworkAgentEngine {
+    if (isCoworkAgentEngine(engine)) {
+      this.currentEngine = engine;
+      return engine;
+    }
+    return this.safeResolveEngine();
   }
 }

@@ -1,15 +1,25 @@
+export const DefaultAgent = {
+  Id: 'main',
+} as const;
+
+export type DefaultAgentId = typeof DefaultAgent.Id;
+
 export const CoworkAgentEngine = {
   YdCowork: 'yd_cowork',
   OpenClaw: 'openclaw',
   Hermes: 'hermes',
   ClaudeCode: 'claude_code',
   Codex: 'codex',
+  CodexApp: 'codex_app',
   OpenCode: 'opencode',
+  GrokBuild: 'grok_build',
   QwenCode: 'qwen_code',
   DeepSeekTui: 'deepseek_tui',
 } as const;
 
 export type CoworkAgentEngine = typeof CoworkAgentEngine[keyof typeof CoworkAgentEngine];
+
+export const DefaultCoworkAgentEngine = CoworkAgentEngine.ClaudeCode;
 
 export const CoworkAgentEngineValues = [
   CoworkAgentEngine.YdCowork,
@@ -17,7 +27,9 @@ export const CoworkAgentEngineValues = [
   CoworkAgentEngine.Hermes,
   CoworkAgentEngine.ClaudeCode,
   CoworkAgentEngine.Codex,
+  CoworkAgentEngine.CodexApp,
   CoworkAgentEngine.OpenCode,
+  CoworkAgentEngine.GrokBuild,
   CoworkAgentEngine.QwenCode,
   CoworkAgentEngine.DeepSeekTui,
 ] as const;
@@ -28,6 +40,7 @@ export const CliCoworkAgentEngines = [
   CoworkAgentEngine.Codex,
   CoworkAgentEngine.Hermes,
   CoworkAgentEngine.OpenCode,
+  CoworkAgentEngine.GrokBuild,
   CoworkAgentEngine.QwenCode,
   CoworkAgentEngine.DeepSeekTui,
 ] as const;
@@ -158,6 +171,57 @@ export function isRuntimeCallSource(value: unknown): value is RuntimeCallSource 
     && RuntimeCallSourceValues.includes(value as RuntimeCallSource);
 }
 
+export const CoworkSessionKind = {
+  Single: 'single',
+  TeamParent: 'team_parent',
+  TeamChild: 'team_child',
+} as const;
+
+export type CoworkSessionKind = typeof CoworkSessionKind[keyof typeof CoworkSessionKind];
+
+export const CoworkSessionKindValues = [
+  CoworkSessionKind.Single,
+  CoworkSessionKind.TeamParent,
+  CoworkSessionKind.TeamChild,
+] as const;
+
+export function isCoworkSessionKind(value: unknown): value is CoworkSessionKind {
+  return typeof value === 'string'
+    && CoworkSessionKindValues.includes(value as CoworkSessionKind);
+}
+
+export const AgentTeamWorkflow = {
+  LeadSequential: 'lead_sequential',
+} as const;
+
+export type AgentTeamWorkflow = typeof AgentTeamWorkflow[keyof typeof AgentTeamWorkflow];
+
+export const AgentTeamWorkflowValues = [
+  AgentTeamWorkflow.LeadSequential,
+] as const;
+
+export function isAgentTeamWorkflow(value: unknown): value is AgentTeamWorkflow {
+  return typeof value === 'string'
+    && AgentTeamWorkflowValues.includes(value as AgentTeamWorkflow);
+}
+
+export const AgentRunTargetType = {
+  Agent: 'agent',
+  Team: 'team',
+} as const;
+
+export type AgentRunTargetType = typeof AgentRunTargetType[keyof typeof AgentRunTargetType];
+
+export const AgentRunTargetTypeValues = [
+  AgentRunTargetType.Agent,
+  AgentRunTargetType.Team,
+] as const;
+
+export function isAgentRunTargetType(value: unknown): value is AgentRunTargetType {
+  return typeof value === 'string'
+    && AgentRunTargetTypeValues.includes(value as AgentRunTargetType);
+}
+
 export const CoworkIpcChannel = {
   AgentProvidersList: 'cowork:agentProviders:list',
   AgentProvidersSave: 'cowork:agentProviders:save',
@@ -171,8 +235,12 @@ export const CoworkIpcChannel = {
   AgentConfigSyncDeepSeekTuiGlobal: 'cowork:agentConfig:syncDeepSeekTuiGlobal',
   AgentCliInstall: 'cowork:agentCli:install',
   AgentCliInstallProgress: 'cowork:agentCli:installProgress',
+  StudioAssetsEnsure: 'cowork:studioAssets:ensure',
+  StreamFileActivity: 'cowork:stream:fileActivity',
   RuntimeMetricsSummary: 'cowork:runtimeMetrics:summary',
   RuntimeMetricsCalls: 'cowork:runtimeMetrics:calls',
   RuntimeMetricsDetail: 'cowork:runtimeMetrics:detail',
+  CodexAppTasksSync: 'codexApp:tasks:sync',
+  CodexAppTaskOpen: 'codexApp:tasks:open',
 } as const;
 export type CoworkIpcChannel = typeof CoworkIpcChannel[keyof typeof CoworkIpcChannel];

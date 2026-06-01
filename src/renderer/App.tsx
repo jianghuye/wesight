@@ -7,10 +7,8 @@ import { CoworkView } from './components/cowork';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
 import CoworkQuestionWizard from './components/cowork/CoworkQuestionWizard';
 import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
-import { McpView } from './components/mcp';
 import PrivacyDialog from './components/PrivacyDialog';
 import RuntimeDashboardView from './components/runtime/RuntimeDashboardView';
-import { ScheduledTasksView } from './components/scheduledTasks';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
 import { SkillsView } from './components/skills';
@@ -38,7 +36,7 @@ import type { CoworkPermissionResult } from './types/cowork';
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions>({});
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'runtime' | 'mcp' | 'agents'>('cowork');
+  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'runtime' | 'agents'>('cowork');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -270,21 +268,21 @@ const App: React.FC = () => {
     setMainView('cowork');
   }, []);
 
-  const handleShowScheduledTasks = useCallback(() => {
-    setMainView('scheduledTasks');
-  }, []);
-
   const handleShowRuntimeDashboard = useCallback(() => {
     setMainView('runtime');
   }, []);
 
   const handleShowMcp = useCallback(() => {
-    setMainView('mcp');
-  }, []);
+    handleShowSettings({ initialTab: 'mcp' });
+  }, [handleShowSettings]);
 
   const handleShowAgents = useCallback(() => {
     setMainView('agents');
   }, []);
+
+  const handleShowAgentSettings = useCallback(() => {
+    handleShowSettings({ initialTab: 'agents' });
+  }, [handleShowSettings]);
 
   const handleToggleSidebar = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
@@ -527,6 +525,19 @@ const App: React.FC = () => {
     return () => window.removeEventListener('app:showToast', handler);
   }, [showToast]);
 
+  useEffect(() => {
+    const unsubscribe = window.electron.desktopPet.onOpenTaskRequested(({ sessionId }) => {
+      setMainView('cowork');
+      dispatch(clearSelection());
+      void coworkService.loadSession(sessionId).then((session) => {
+        if (!session) {
+          showToast(i18nService.t('desktopPetOpenTaskFailed'));
+        }
+      });
+    });
+    return unsubscribe;
+  }, [dispatch, showToast]);
+
   // 监听托盘菜单打开设置的 IPC 事件
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on('app:openSettings', () => {
@@ -687,10 +698,9 @@ const App: React.FC = () => {
           activeView={mainView}
           onShowSkills={handleShowSkills}
           onShowCowork={handleShowCowork}
-          onShowScheduledTasks={handleShowScheduledTasks}
           onShowRuntimeDashboard={handleShowRuntimeDashboard}
-          onShowMcp={handleShowMcp}
           onShowAgents={handleShowAgents}
+          onShowAgentSettings={handleShowAgentSettings}
           onNewChat={handleNewChat}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={handleToggleSidebar}
@@ -709,26 +719,12 @@ const App: React.FC = () => {
                 updateBadge={isSidebarCollapsed ? updateBadge : null}
                 readOnly={enterpriseConfig?.ui?.skills === 'readonly'}
               />
-            ) : mainView === 'scheduledTasks' ? (
-              <ScheduledTasksView
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
-              />
             ) : mainView === 'runtime' ? (
               <RuntimeDashboardView
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}
                 onShowCowork={handleShowCowork}
-                updateBadge={isSidebarCollapsed ? updateBadge : null}
-              />
-            ) : mainView === 'mcp' ? (
-              <McpView
-                isSidebarCollapsed={isSidebarCollapsed}
-                onToggleSidebar={handleToggleSidebar}
-                onNewChat={handleNewChat}
                 updateBadge={isSidebarCollapsed ? updateBadge : null}
               />
             ) : mainView === 'agents' ? (

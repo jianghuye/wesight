@@ -1,24 +1,26 @@
+import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useState } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { RootState } from '../../store';
-import { setViewMode, selectTask } from '../../store/slices/scheduledTaskSlice';
-import { scheduledTaskService } from '../../services/scheduledTask';
+import { useDispatch, useSelector } from 'react-redux';
+
 import { i18nService } from '../../services/i18n';
-import TaskList from './TaskList';
-import TaskForm from './TaskForm';
-import TaskDetail from './TaskDetail';
+import { scheduledTaskService } from '../../services/scheduledTask';
+import { RootState } from '../../store';
+import { selectTask, setViewMode } from '../../store/slices/scheduledTaskSlice';
+import ComposeIcon from '../icons/ComposeIcon';
+import SidebarToggleIcon from '../icons/SidebarToggleIcon';
+import WindowTitleBar from '../window/WindowTitleBar';
 import AllRunsHistory from './AllRunsHistory';
 import DeleteConfirmModal from './DeleteConfirmModal';
-import { ArrowLeftIcon } from '@heroicons/react/24/outline';
-import SidebarToggleIcon from '../icons/SidebarToggleIcon';
-import ComposeIcon from '../icons/ComposeIcon';
-import WindowTitleBar from '../window/WindowTitleBar';
+import TaskDetail from './TaskDetail';
+import TaskForm from './TaskForm';
+import TaskList from './TaskList';
 
 interface ScheduledTasksViewProps {
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   onNewChat?: () => void;
   updateBadge?: React.ReactNode;
+  embedded?: boolean;
 }
 
 type TabType = 'tasks' | 'history';
@@ -28,6 +30,7 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
   onToggleSidebar,
   onNewChat,
   updateBadge,
+  embedded = false,
 }) => {
   const dispatch = useDispatch();
   const isMac = window.electron.platform === 'darwin';
@@ -80,43 +83,57 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border shrink-0">
-        <div className="flex items-center space-x-3 h-8">
-          {isSidebarCollapsed && (
-            <div className={`non-draggable flex items-center gap-1 ${isMac ? 'pl-[68px]' : ''}`}>
+      {!embedded && (
+        <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border shrink-0">
+          <div className="flex items-center space-x-3 h-8">
+            {isSidebarCollapsed && (
+              <div className={`non-draggable flex items-center gap-1 ${isMac ? 'pl-[68px]' : ''}`}>
+                <button
+                  type="button"
+                  onClick={onToggleSidebar}
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  <SidebarToggleIcon className="h-4 w-4" isCollapsed={true} />
+                </button>
+                <button
+                  type="button"
+                  onClick={onNewChat}
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                >
+                  <ComposeIcon className="h-4 w-4" />
+                </button>
+                {updateBadge}
+              </div>
+            )}
+            {viewMode !== 'list' && (
               <button
-                type="button"
-                onClick={onToggleSidebar}
-                className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+                onClick={handleBackToList}
+                className="non-draggable p-2 rounded-lg hover:bg-surface-raised text-secondary transition-colors"
+                aria-label={i18nService.t('back')}
               >
-                <SidebarToggleIcon className="h-4 w-4" isCollapsed={true} />
+                <ArrowLeftIcon className="h-5 w-5" />
               </button>
-              <button
-                type="button"
-                onClick={onNewChat}
-                className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-              >
-                <ComposeIcon className="h-4 w-4" />
-              </button>
-              {updateBadge}
-            </div>
-          )}
-          {viewMode !== 'list' && (
-            <button
-              onClick={handleBackToList}
-              className="non-draggable p-2 rounded-lg hover:bg-surface-raised text-secondary transition-colors"
-              aria-label={i18nService.t('back')}
-            >
-              <ArrowLeftIcon className="h-5 w-5" />
-            </button>
-          )}
-          <h1 className="text-lg font-semibold text-foreground">
-            {i18nService.t('scheduledTasksTitle')}
-          </h1>
+            )}
+            <h1 className="text-lg font-semibold text-foreground">
+              {i18nService.t('scheduledTasksTitle')}
+            </h1>
+          </div>
+          <WindowTitleBar inline />
         </div>
-        <WindowTitleBar inline />
-      </div>
+      )}
+
+      {embedded && viewMode !== 'list' && (
+        <div className="flex items-center px-4 py-3 border-b border-border shrink-0">
+          <button
+            type="button"
+            onClick={handleBackToList}
+            className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
+          >
+            <ArrowLeftIcon className="h-4 w-4" />
+            {i18nService.t('back')}
+          </button>
+        </div>
+      )}
 
       {/* Tabs + New Task button */}
       {showTabs && (

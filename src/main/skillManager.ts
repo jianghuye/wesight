@@ -6,12 +6,19 @@ import fs from 'fs';
 import yaml from 'js-yaml';
 import path from 'path';
 
+import { SkillsIpcChannel } from '../shared/skills/constants';
 import { cpRecursiveSync } from './fsCompat';
 import { t } from './i18n';
 import { getElectronNodeRuntimePath } from './libs/coworkUtil';
 import { appendPythonRuntimeToEnv } from './libs/pythonRuntime';
 import { mergeReports,scanMultipleSkillDirs, scanSkillSecurity } from './libs/skillSecurity/skillSecurityScanner';
 import type { SecurityReportAction,SkillSecurityReport } from './libs/skillSecurity/skillSecurityTypes';
+import type {
+  SkillHubMarketplaceOptions,
+  SkillHubMarketplaceResult,
+  SkillHubMarketplaceSkill,
+} from './skillHubMarketplace';
+import { fetchSkillHubMarketplace } from './skillHubMarketplace';
 import { SqliteStore } from './sqliteStore';
 
 /**
@@ -895,6 +902,30 @@ const parseClawhubUrl = (source: string): { name: string } | null => {
   }
 };
 
+const parseSkillHubSource = (source: string): { slug: string } | null => {
+  const trimmed = source.trim();
+  if (trimmed.startsWith('skillhub:')) {
+    const slug = trimmed.slice('skillhub:'.length).trim();
+    return slug ? { slug } : null;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const host = url.hostname.toLowerCase();
+    if (!['skillhub.lol', 'www.skillhub.lol', 'skillhub.club', 'www.skillhub.club'].includes(host)) {
+      return null;
+    }
+    const segments = url.pathname.split('/').filter(Boolean);
+    const skillIndex = segments.indexOf('skills');
+    if (skillIndex < 0 || !segments[skillIndex + 1]) {
+      return null;
+    }
+    return { slug: decodeURIComponent(segments[skillIndex + 1]) };
+  } catch {
+    return null;
+  }
+};
+
 /**
  * Resolve the bundled npx-cli.js path for running npx commands
  * without requiring a system Node.js installation.
@@ -962,6 +993,45 @@ const downloadClawhubSkill = async (
       throw new Error(t('skillErrClawhubNotFound'));
     }
     throw new Error(t('skillErrClawhubDownloadFailed') + '\n' + cleaned);
+  }
+};
+
+const downloadSkillHubSkill = async (
+  slug: string,
+  targetDir: string,
+  env: NodeJS.ProcessEnv
+): Promise<void> => {
+  const npxCliJs = resolveNpxCliJs();
+  const electronPath = getElectronNodeRuntimePath();
+
+  let command: string;
+  let args: string[];
+  if (npxCliJs) {
+    console.log('[SkillHub] using bundled npx to install marketplace skill');
+    command = electronPath;
+    args = [npxCliJs, '@skill-hub/cli@latest', 'install', slug, '--dir', targetDir, '--yes'];
+    const hideScript = ensureWindowsHideScript();
+    if (hideScript) {
+      args = ['--require', hideScript, ...args];
+    }
+  } else {
+    const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    console.log('[SkillHub] bundled npx not found, falling back to system npx');
+    if (!hasCommand(npxCommand, env)) {
+      throw new Error('npx is not available. Please install Node.js from https://nodejs.org/');
+    }
+    command = npxCommand;
+    args = ['@skill-hub/cli@latest', 'install', slug, '--dir', targetDir, '--yes'];
+  }
+
+  try {
+    await runCommand(command, args, {
+      env: { ...env, ELECTRON_RUN_AS_NODE: '1', COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' },
+    });
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const cleaned = raw.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    throw new Error(`${t('skillErrSkillHubDownloadFailed')}\n${cleaned}`);
   }
 };
 
@@ -1592,6 +1662,14 @@ export class SkillManager {
         const env = buildSkillEnv();
         await downloadClawhubSkill(clawhubParsed.name, tempRoot, env);
         localSource = tempRoot;
+      } else if (parseSkillHubSource(trimmed)) {
+        const skillHubParsed = parseSkillHubSource(trimmed)!;
+        console.log(`[SkillManager] downloadSkill: detected SkillHub source, slug="${skillHubParsed.slug}"`);
+        const tempRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'wesight-skill-skillhub-'));
+        cleanupPath = tempRoot;
+        const env = buildSkillEnv();
+        await downloadSkillHubSkill(skillHubParsed.slug, tempRoot, env);
+        localSource = tempRoot;
       } else {
         const normalized = this.normalizeGitSource(trimmed);
         if (!normalized) {
@@ -1785,7 +1863,12 @@ export class SkillManager {
       cleanupPath = tempRoot;
 
       let localSource: string;
-      if (isRemoteZipUrl(downloadUrl)) {
+      const skillHubParsed = parseSkillHubSource(downloadUrl);
+      if (skillHubParsed) {
+        const env = buildSkillEnv();
+        await downloadSkillHubSkill(skillHubParsed.slug, tempRoot, env);
+        localSource = tempRoot;
+      } else if (isRemoteZipUrl(downloadUrl)) {
         localSource = await downloadZipUrl(downloadUrl, tempRoot);
       } else {
         const normalized = this.normalizeGitSource(downloadUrl);
@@ -1994,6 +2077,33 @@ export class SkillManager {
     return { success: true, skills: this.listSkills() };
   }
 
+  async fetchMarketplaceSkills(options: SkillHubMarketplaceOptions): Promise<SkillHubMarketplaceResult> {
+    return fetchSkillHubMarketplace(this.getStore(), options);
+  }
+
+  async searchMarketplaceSkills(options: SkillHubMarketplaceOptions): Promise<SkillHubMarketplaceResult> {
+    return fetchSkillHubMarketplace(this.getStore(), options);
+  }
+
+  async installMarketplaceSkill(skill: SkillHubMarketplaceSkill): Promise<{
+    success: boolean;
+    skills?: SkillRecord[];
+    error?: string;
+    auditReport?: SkillSecurityReport;
+    pendingInstallId?: string;
+  }> {
+    if (!skill) {
+      return { success: false, error: 'Missing marketplace skill download source' };
+    }
+    if (skill.sourceType === 'skillhub' && skill.slug) {
+      return this.downloadSkill(`skillhub:${skill.slug}`);
+    }
+    if (skill.url) {
+      return this.downloadSkill(skill.url);
+    }
+    return { success: false, error: 'Missing marketplace skill download source' };
+  }
+
   startWatching(): void {
     this.stopWatching();
     const primaryRoot = this.ensureSkillsRoot();
@@ -2067,7 +2177,7 @@ export class SkillManager {
   private notifySkillsChanged(): void {
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
-        win.webContents.send('skills:changed');
+        win.webContents.send(SkillsIpcChannel.Changed);
       }
     });
     // Notify external listeners (e.g. OpenClaw AGENTS.md sync)
@@ -2640,4 +2750,5 @@ export const __skillManagerTestUtils = {
   isTruthy,
   extractDescription,
   parseClawhubUrl,
+  parseSkillHubSource,
 };

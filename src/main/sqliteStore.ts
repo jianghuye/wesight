@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 
+import { CoworkAgentEngine, DefaultCoworkAgentEngine } from '../shared/cowork/constants';
 import { DB_FILENAME } from './appConstants';
 
 type ChangePayload<T = unknown> = {
@@ -14,6 +15,8 @@ type ChangePayload<T = unknown> = {
 };
 
 const USER_MEMORIES_MIGRATION_KEY = 'userMemories.migration.v1.completed';
+const DEFAULT_AGENT_DB_NAME = 'Default Agent';
+const DEFAULT_AGENT_ENGINE = DefaultCoworkAgentEngine;
 
 export class SqliteStore {
   private db: Database.Database;
@@ -58,11 +61,16 @@ export class SqliteStore {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         claude_session_id TEXT,
+        codex_app_thread_id TEXT,
         status TEXT NOT NULL DEFAULT 'idle',
         pinned INTEGER NOT NULL DEFAULT 0,
         cwd TEXT NOT NULL,
         system_prompt TEXT NOT NULL DEFAULT '',
         execution_mode TEXT,
+        runtime_snapshot_json TEXT,
+        session_kind TEXT NOT NULL DEFAULT 'single',
+        parent_session_id TEXT,
+        team_id TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -225,10 +233,29 @@ export class SqliteStore {
         system_prompt TEXT NOT NULL DEFAULT '',
         identity TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
+        agent_engine TEXT NOT NULL DEFAULT '${DEFAULT_AGENT_ENGINE}',
         icon TEXT NOT NULL DEFAULT '',
         skill_ids TEXT NOT NULL DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1,
         is_default INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'custom',
+        preset_id TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_teams (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        icon TEXT NOT NULL DEFAULT '',
+        lead_agent_id TEXT NOT NULL DEFAULT '',
+        members TEXT NOT NULL DEFAULT '[]',
+        default_workflow TEXT NOT NULL DEFAULT 'lead_sequential',
+        skill_ids TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1,
         source TEXT NOT NULL DEFAULT 'custom',
         preset_id TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
@@ -267,6 +294,25 @@ export class SqliteStore {
       if (!colNames.includes('active_skill_ids')) {
         this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN active_skill_ids TEXT;');
       }
+      if (!colNames.includes('runtime_snapshot_json')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN runtime_snapshot_json TEXT;');
+      }
+      if (!colNames.includes('session_kind')) {
+        this.db.exec("ALTER TABLE cowork_sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'single';");
+      }
+      if (!colNames.includes('parent_session_id')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN parent_session_id TEXT;');
+      }
+      if (!colNames.includes('team_id')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN team_id TEXT;');
+      }
+      if (!colNames.includes('codex_app_thread_id')) {
+        this.db.exec('ALTER TABLE cowork_sessions ADD COLUMN codex_app_thread_id TEXT;');
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_cowork_sessions_codex_app_thread_id
+        ON cowork_sessions(codex_app_thread_id);
+      `);
 
       // Migration: Add sequence column to cowork_messages
       const msgColumns = this.db.pragma('table_info(cowork_messages)') as Array<{ name: string }>;
@@ -287,6 +333,16 @@ export class SqliteStore {
           UPDATE cowork_messages
           SET sequence = (SELECT seq FROM numbered WHERE numbered.id = cowork_messages.id)
         `);
+      }
+    } catch {
+      // Column already exists or migration not needed.
+    }
+
+    try {
+      const agentColumns = this.db.pragma('table_info(agents)') as Array<{ name: string }>;
+      const agentColumnNames = agentColumns.map(column => column.name);
+      if (!agentColumnNames.includes('agent_engine')) {
+        this.db.exec(`ALTER TABLE agents ADD COLUMN agent_engine TEXT NOT NULL DEFAULT '${DEFAULT_AGENT_ENGINE}';`);
       }
     } catch {
       // Column already exists or migration not needed.
@@ -329,7 +385,9 @@ export class SqliteStore {
 
     // Migration: Ensure default 'main' agent exists
     try {
-      const mainAgent = this.db.prepare("SELECT id FROM agents WHERE id = 'main'").get();
+      const mainAgent = this.db
+        .prepare("SELECT id, name, agent_engine FROM agents WHERE id = 'main'")
+        .get() as { id: string; name: string; agent_engine?: string | null } | undefined;
       if (!mainAgent) {
         const now = Date.now();
         // Read existing systemPrompt from cowork_config to inherit into main agent
@@ -347,17 +405,29 @@ export class SqliteStore {
         this.db
           .prepare(
             `
-          INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-          VALUES ('main', 'main', '', ?, '', '', '', '[]', 1, 1, 'custom', '', ?, ?)
+          INSERT INTO agents (id, name, description, system_prompt, identity, model, agent_engine, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+          VALUES ('main', ?, '', ?, '', '', ?, '', '[]', 1, 1, 'custom', '', ?, ?)
         `,
           )
-          .run(existingSystemPrompt, now, now);
+          .run(DEFAULT_AGENT_DB_NAME, existingSystemPrompt, DEFAULT_AGENT_ENGINE, now, now);
+      } else if (mainAgent.name === 'main' || mainAgent.name === '') {
+        this.db
+          .prepare("UPDATE agents SET name = ?, updated_at = ? WHERE id = 'main'")
+          .run(DEFAULT_AGENT_DB_NAME, Date.now());
+      }
+      if (mainAgent?.agent_engine === CoworkAgentEngine.YdCowork) {
+        this.db
+          .prepare("UPDATE agents SET agent_engine = ?, updated_at = ? WHERE id = 'main'")
+          .run(DEFAULT_AGENT_ENGINE, Date.now());
       }
     } catch (error) {
       console.warn('Failed to ensure main agent:', error);
     }
 
     try {
+      this.db
+        .prepare("UPDATE cowork_config SET value = ?, updated_at = ? WHERE key = 'agentEngine' AND value = ?")
+        .run(DEFAULT_AGENT_ENGINE, Date.now(), CoworkAgentEngine.YdCowork);
       this.db.exec(
         `UPDATE cowork_sessions SET execution_mode = 'local' WHERE execution_mode = 'container';`,
       );

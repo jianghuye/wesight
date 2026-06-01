@@ -1,5 +1,5 @@
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
-import { ArrowTopRightOnSquareIcon,ChatBubbleLeftIcon, CheckCircleIcon, Cog6ToothIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, InformationCircleIcon, SignalIcon, UserCircleIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ArrowTopRightOnSquareIcon,ChatBubbleLeftIcon, CheckCircleIcon, ClockIcon, Cog6ToothIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, InformationCircleIcon, SignalIcon, UserCircleIcon, UserGroupIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import {
   CoworkAgentEngine as CoworkAgentEngineValue,
   DeepSeekTuiPermissionMode as DeepSeekTuiPermissionModeValue,
@@ -49,9 +49,11 @@ import type {
   OpenCodePermissionMode,
   QwenCodePermissionMode,
 } from '../types/cowork';
+import AgentsView from './agent/AgentsView';
 import Modal from './common/Modal';
 import ErrorMessage from './ErrorMessage';
 import BrainIcon from './icons/BrainIcon';
+import ConnectorIcon from './icons/ConnectorIcon';
 import PencilIcon from './icons/PencilIcon';
 import PlusCircleIcon from './icons/PlusCircleIcon';
 import {
@@ -74,11 +76,13 @@ import {
 } from './icons/providers';
 import TrashIcon from './icons/TrashIcon';
 import IMSettings from './im/IMSettings';
+import McpManager from './mcp/McpManager';
 import PetSprite, { PetMood } from './pet/PetSprite';
+import { ScheduledTasksView } from './scheduledTasks';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import ThemedSelect from './ui/ThemedSelect';
 
-type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
+type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkMemory' | 'coworkAgent' | 'agents' | 'shortcuts' | 'im' | 'email' | 'scheduledTasks' | 'mcp' | 'about';
 
 const COWORK_AGENT_ENGINE_OPTIONS: Array<{
   value: CoworkAgentEngine;
@@ -111,9 +115,19 @@ const COWORK_AGENT_ENGINE_OPTIONS: Array<{
     hintKey: 'coworkAgentEngineCodexHint',
   },
   {
+    value: CoworkAgentEngineValue.CodexApp,
+    labelKey: 'coworkAgentEngineCodexApp',
+    hintKey: 'coworkAgentEngineCodexAppHint',
+  },
+  {
     value: CoworkAgentEngineValue.OpenCode,
     labelKey: 'coworkAgentEngineOpenCode',
     hintKey: 'coworkAgentEngineOpenCodeHint',
+  },
+  {
+    value: CoworkAgentEngineValue.GrokBuild,
+    labelKey: 'coworkAgentEngineGrokBuild',
+    hintKey: 'coworkAgentEngineGrokBuildHint',
   },
   {
     value: CoworkAgentEngineValue.QwenCode,
@@ -131,6 +145,7 @@ const PET_VARIANT_OPTIONS: Array<{
   value: PetVariantType;
   labelKey: string;
 }> = [
+  { value: PetVariant.WeSightAgent, labelKey: 'petVariantWeSightAgent' },
   { value: PetVariant.BlueBot, labelKey: 'petVariantBlueBot' },
   { value: PetVariant.AquaDrop, labelKey: 'petVariantAquaDrop' },
   { value: PetVariant.FlameBuddy, labelKey: 'petVariantFlameBuddy' },
@@ -246,8 +261,8 @@ interface ProvidersImportPayload {
 const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode }> = {
   openai: { label: 'OpenAI', icon: <OpenAIIcon /> },
   deepseek: { label: 'DeepSeek', icon: <DeepSeekIcon /> },
-  gemini: { label: 'Gemini', icon: <GeminiIcon /> },
-  anthropic: { label: 'Anthropic', icon: <AnthropicIcon /> },
+  gemini: { label: 'Google', icon: <GeminiIcon /> },
+  anthropic: { label: 'Claude', icon: <AnthropicIcon /> },
   moonshot: { label: 'Moonshot', icon: <MoonshotIcon /> },
   zhipu: { label: 'Zhipu', icon: <ZhipuIcon /> },
   minimax: { label: 'MiniMax', icon: <MiniMaxIcon /> },
@@ -509,7 +524,8 @@ const getDefaultProviders = (): ProvidersConfig => {
 const getDefaultActiveProvider = (): ProviderType => {
   const providers = (defaultConfig.providers ?? {}) as ProvidersConfig;
   const firstEnabledProvider = providerKeys.find(providerKey => providers[providerKey]?.enabled);
-  return firstEnabledProvider ?? providerKeys[0];
+  const defaultModelProvider = defaultConfig.model.defaultModelProvider as ProviderType | undefined;
+  return firstEnabledProvider ?? (defaultModelProvider && providers[defaultModelProvider] ? defaultModelProvider : providerKeys[0]);
 };
 
 /** Join workspace directory with a filename using platform-aware separator. */
@@ -819,6 +835,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
   const [hermesEngineStatus, setHermesEngineStatus] = useState<HermesEngineStatus | null>(null);
   const [agentEnvironmentSnapshot, setAgentEnvironmentSnapshot] = useState<ExternalAgentEnvironmentSnapshot | null>(null);
+  const [codexAppStarting, setCodexAppStarting] = useState(false);
   const [openclawConfigSource, setOpenClawConfigSource] = useState<ExternalAgentConfigSource>(
     coworkConfig.openclawConfigSource ?? ExternalAgentConfigSourceValue.LocalCli,
   );
@@ -861,6 +878,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     hermes: '',
     openclaw: '',
     opencode: '',
+    grok: '',
     qwen: '',
     deepseek_tui: '',
   });
@@ -2653,8 +2671,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       { key: 'model' as TabType,          label: i18nService.t('model'),          icon: <CubeIcon className="h-5 w-5" /> },
       { key: 'im' as TabType,             label: i18nService.t('imBot'),          icon: <ChatBubbleLeftIcon className="h-5 w-5" /> },
       { key: 'email' as TabType,          label: i18nService.t('emailTab'),       icon: <EnvelopeIcon className="h-5 w-5" /> },
+      { key: 'scheduledTasks' as TabType, label: i18nService.t('scheduledTasksTitle'), icon: <ClockIcon className="h-5 w-5" /> },
+      { key: 'mcp' as TabType,            label: i18nService.t('mcpServers'),     icon: <ConnectorIcon className="h-5 w-5" /> },
       { key: 'coworkMemory' as TabType,   label: i18nService.t('coworkMemoryTitle'), icon: <BrainIcon className="h-5 w-5" /> },
       { key: 'coworkAgent' as TabType,    label: i18nService.t('coworkAgentTab'),    icon: <UserCircleIcon className="h-5 w-5" /> },
+      { key: 'agents' as TabType,         label: i18nService.t('agentManagement'), icon: <UserGroupIcon className="h-5 w-5" /> },
       { key: 'shortcuts' as TabType,      label: i18nService.t('shortcuts'),      icon: <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5"><rect x="2" y="4" width="20" height="14" rx="2" /><line x1="6" y1="8" x2="8" y2="8" /><line x1="10" y1="8" x2="12" y2="8" /><line x1="14" y1="8" x2="16" y2="8" /><line x1="6" y1="12" x2="8" y2="12" /><line x1="10" y1="12" x2="14" y2="12" /><line x1="16" y1="12" x2="18" y2="12" /><line x1="8" y1="15.5" x2="16" y2="15.5" /></svg> },
       { key: 'about' as TabType,          label: i18nService.t('about'),          icon: <InformationCircleIcon className="h-5 w-5" /> },
     ];
@@ -2752,6 +2773,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       setAgentCliInstallingAppType((current) => (
         current === 'hermes' ? null : current
       ));
+    }
+  };
+
+  const handleStartCodexApp = async () => {
+    if (codexAppStarting) return;
+    setError(null);
+    setCodexAppStarting(true);
+    try {
+      const result = await coworkService.startCodexApp();
+      if (!result.success) {
+        setError(result.error || i18nService.t('coworkAgentCodexAppMissing'));
+      }
+      await refreshAgentEnvironmentSnapshot();
+      if (result.success) {
+        setNoticeMessage(i18nService.t('coworkAgentCodexAppReady'));
+      }
+    } finally {
+      setCodexAppStarting(false);
     }
   };
 
@@ -3050,12 +3089,82 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     </div>
   );
 
+  const renderCodexAppAgentEngineDetails = () => {
+    const status = agentEnvironmentSnapshot?.codexApp;
+    const ready = Boolean(status?.cliFound && status.appInstalled && status.appServerSupported);
+    const rows = [
+      { label: i18nService.t('coworkAgentEngineCommandPath'), value: status?.cliPath || '-' },
+      { label: i18nService.t('coworkAgentEngineVersion'), value: status?.cliVersion || '-' },
+      { label: i18nService.t('coworkAgentCodexAppAppPath'), value: status?.appPath || '-' },
+      {
+        label: i18nService.t('coworkAgentCodexAppServer'),
+        value: status?.appServerSupported
+          ? i18nService.t('coworkAgentCodexAppServerReady')
+          : i18nService.t('coworkAgentCodexAppServerMissing'),
+      },
+      { label: i18nService.t('coworkAgentCodexAppSocket'), value: status?.socketPath || '-' },
+      { label: i18nService.t('coworkAgentCodexAppModelSource'), value: i18nService.t('coworkAgentCodexAppModelSourceValue') },
+    ];
+
+    return (
+      <div className="mt-4 space-y-4">
+        <div className={`rounded-xl border px-4 py-3 text-sm ${ready
+          ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/60 dark:bg-green-950/30 dark:text-green-300'
+          : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300'}`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="font-medium">
+                {i18nService.t('coworkAgentCodexAppStatusTitle')}
+              </div>
+              <div className="mt-1 text-xs opacity-90">
+                {status?.message || i18nService.t('coworkAgentCodexAppMissing')}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void handleStartCodexApp();
+              }}
+              disabled={codexAppStarting}
+              className="shrink-0 rounded-md border border-current/20 px-2 py-1 text-[11px] font-medium hover:bg-black/5 disabled:cursor-wait disabled:opacity-50 dark:hover:bg-white/10"
+            >
+              {i18nService.t(status?.appRunning ? 'coworkAgentCodexAppReconnect' : 'coworkAgentCodexAppLaunch')}
+            </button>
+          </div>
+          {codexAppStarting && (
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/10">
+              <div className="h-full w-2/3 animate-pulse rounded-full bg-primary" />
+            </div>
+          )}
+          <div className="mt-3 space-y-1">
+            {rows.map((row) => (
+              <div key={row.label} className="grid grid-cols-[104px_minmax(0,1fr)] gap-2 text-[11px] leading-5">
+                <span className="text-secondary">{row.label}</span>
+                <span className="truncate font-mono text-foreground/80" title={row.value}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-xl border border-border px-3 py-3 text-xs leading-5 text-secondary">
+          {i18nService.t('coworkAgentEngineCodexAppHint')}
+        </div>
+      </div>
+    );
+  };
+
   const renderSelectedAgentEngineDetails = (engine: CoworkAgentEngine) => {
+    if (engine === CoworkAgentEngineValue.CodexApp) {
+      return renderCodexAppAgentEngineDetails();
+    }
     if (
       engine === CoworkAgentEngineValue.ClaudeCode
       || engine === CoworkAgentEngineValue.Codex
       || engine === CoworkAgentEngineValue.Hermes
       || engine === CoworkAgentEngineValue.OpenCode
+      || engine === CoworkAgentEngineValue.GrokBuild
       || engine === CoworkAgentEngineValue.QwenCode
       || engine === CoworkAgentEngineValue.DeepSeekTui
     ) {
@@ -3748,27 +3857,41 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       case 'general':
         return (
           <div className="space-y-8">
-            {/* Language Section */}
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium text-foreground">
-                {i18nService.t('language')}
-              </h4>
-              <div className="w-[140px] shrink-0">
-                <ThemedSelect
-                  id="language"
-                  value={language}
-                  onChange={(value) => {
-                    const nextLanguage = value as LanguageType;
-                    setLanguage(nextLanguage);
-                    i18nService.setLanguage(nextLanguage, { persist: false });
-                  }}
-                  options={[
-                    { value: 'zh', label: i18nService.t('chinese') },
-                    { value: 'en', label: i18nService.t('english') }
-                  ]}
-                />
+            <section className="rounded-2xl border border-border bg-surface-raised/40 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h4 className="text-sm font-semibold text-foreground">
+                    {i18nService.t('languageRegion')}
+                  </h4>
+                  <p className="mt-1 text-xs text-secondary">
+                    {i18nService.t('appLanguageHint')}
+                  </p>
+                </div>
+                <div className="w-[180px] shrink-0">
+                  <ThemedSelect
+                    id="language"
+                    value={language}
+                    onChange={(value) => {
+                      const nextLanguage = value as LanguageType;
+                      setLanguage(nextLanguage);
+                      i18nService.setLanguage(nextLanguage);
+                    }}
+                    options={[
+                      { value: 'zh', label: i18nService.t('chinese') },
+                      { value: 'en', label: i18nService.t('english') }
+                    ]}
+                  />
+                </div>
               </div>
-            </div>
+              <div className="mt-4 flex items-center justify-between rounded-xl border border-border bg-background px-3 py-2">
+                <span className="text-sm font-medium text-foreground">
+                  {i18nService.t('appLanguage')}
+                </span>
+                <span className="text-xs text-secondary">
+                  {language === 'zh' ? i18nService.t('chinese') : i18nService.t('english')}
+                </span>
+              </div>
+            </section>
 
             {/* Auto-launch Section */}
             <div>
@@ -5311,6 +5434,19 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       case 'im':
         return <IMSettings />;
 
+      case 'scheduledTasks':
+        return (
+          <div className="h-full min-h-0">
+            <ScheduledTasksView embedded />
+          </div>
+        );
+
+      case 'mcp':
+        return <McpManager />;
+
+      case 'agents':
+        return <AgentsView embedded />;
+
       case 'about':
         return (
           <div className="flex min-h-full flex-col items-center pt-6 pb-3">
@@ -5483,10 +5619,28 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     onClose();
   };
 
+  const isEmbeddedToolTab = activeTab === 'scheduledTasks' || activeTab === 'mcp' || activeTab === 'agents';
+  const isFullHeightTab = activeTab === 'scheduledTasks' || activeTab === 'agents';
+  const contentClassName = isFullHeightTab
+    ? 'p-0 flex-1 overflow-hidden'
+    : 'px-6 py-4 flex-1 overflow-y-auto';
+  const contentStyle = isFullHeightTab ? undefined : { scrollbarGutter: 'stable' as const };
+  const settingsContent = (
+    <div
+      ref={contentRef}
+      className={contentClassName}
+      style={contentStyle}
+    >
+      {renderTabContent()}
+    </div>
+  );
+
   return (
     <Modal onClose={handleCloseSettings} overlayClassName="fixed inset-0 z-50 modal-backdrop flex items-center justify-center">
       <div
-        className="relative flex w-[900px] h-[80vh] rounded-2xl border-border border shadow-modal overflow-hidden modal-content"
+        className={`relative flex h-[80vh] max-w-[calc(100vw-48px)] rounded-2xl border-border border shadow-modal overflow-hidden modal-content ${
+          isEmbeddedToolTab ? 'w-[1040px]' : 'w-[900px]'
+        }`}
         onClick={handleSettingsClick}
       >
         {/* Left sidebar */}
@@ -5545,37 +5699,35 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
-            {/* Tab content */}
-            <div
-              ref={contentRef}
-              className="px-6 py-4 flex-1 overflow-y-auto"
-              style={{ scrollbarGutter: 'stable' }}
-            >
-              {renderTabContent()}
+          {isEmbeddedToolTab ? (
+            <div className="flex flex-col flex-1 overflow-hidden">
+              {settingsContent}
             </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
+              {settingsContent}
 
-            {/* Footer buttons */}
-            <div className="flex justify-end space-x-4 p-4 border-border border-t bg-background shrink-0">
-              <button
-                type="button"
-                onClick={handleCloseSettings}
-                disabled={isSaving}
-                className="px-4 py-2 text-foreground hover:bg-surface-raised rounded-xl transition-colors text-sm font-medium border border-border active:scale-[0.98] disabled:cursor-wait disabled:opacity-50"
-              >
-                {i18nService.t('cancel')}
-              </button>
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-xl transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
-              >
-                {isCoworkAgentConfigApplying
-                  ? i18nService.t('coworkAgentConfigApplying')
-                  : isSaving ? i18nService.t('saving') : i18nService.t('save')}
-              </button>
-            </div>
-          </form>
+              <div className="flex justify-end space-x-4 p-4 border-border border-t bg-background shrink-0">
+                <button
+                  type="button"
+                  onClick={handleCloseSettings}
+                  disabled={isSaving}
+                  className="px-4 py-2 text-foreground hover:bg-surface-raised rounded-xl transition-colors text-sm font-medium border border-border active:scale-[0.98] disabled:cursor-wait disabled:opacity-50"
+                >
+                  {i18nService.t('cancel')}
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-xl transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+                >
+                  {isCoworkAgentConfigApplying
+                    ? i18nService.t('coworkAgentConfigApplying')
+                    : isSaving ? i18nService.t('saving') : i18nService.t('save')}
+                </button>
+              </div>
+            </form>
+          )}
 
         </div>
 

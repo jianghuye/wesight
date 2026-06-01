@@ -46,6 +46,11 @@ export type ApiConfigResolution = {
   };
 };
 
+export type ApiConfigOverride = {
+  modelId?: string | null;
+  providerName?: string | null;
+};
+
 // Store getter function injected from main.ts
 let storeGetter: (() => SqliteStore | null) | null = null;
 
@@ -156,7 +161,10 @@ function tryWesightServerFallback(modelId?: string): MatchedProvider | null {
   };
 }
 
-function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvider | null; error?: string } {
+function resolveMatchedProvider(
+  appConfig: AppConfig,
+  override: ApiConfigOverride = {},
+): { matched: MatchedProvider | null; error?: string } {
   const providers = appConfig.providers ?? {};
 
   const resolveFallbackModel = (): {
@@ -181,7 +189,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
     return null;
   };
 
-  const configuredModelId = appConfig.model?.defaultModel?.trim();
+  const configuredModelId = override.modelId?.trim() || appConfig.model?.defaultModel?.trim();
   let modelId = configuredModelId || '';
   if (!modelId) {
     const fallback = resolveFallbackModel();
@@ -194,7 +202,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   }
 
   let providerEntry: [string, ProviderConfig] | undefined;
-  const preferredProviderName = appConfig.model?.defaultModelProvider?.trim();
+  const preferredProviderName = override.providerName?.trim() || appConfig.model?.defaultModelProvider?.trim();
 
   // Handle wesight-server provider: dynamically construct from auth tokens
   if (preferredProviderName === ProviderName.WesightServer) {
@@ -275,7 +283,10 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   };
 }
 
-export function resolveCurrentApiConfig(target: OpenAICompatProxyTarget = 'local'): ApiConfigResolution {
+export function resolveCurrentApiConfig(
+  target: OpenAICompatProxyTarget = 'local',
+  override: ApiConfigOverride = {},
+): ApiConfigResolution {
   const sqliteStore = getStore();
   if (!sqliteStore) {
     return {
@@ -292,7 +303,7 @@ export function resolveCurrentApiConfig(target: OpenAICompatProxyTarget = 'local
     };
   }
 
-  const { matched, error } = resolveMatchedProvider(appConfig);
+  const { matched, error } = resolveMatchedProvider(appConfig, override);
   if (!matched) {
     return {
       config: null,
@@ -376,8 +387,11 @@ export function resolveCurrentApiConfig(target: OpenAICompatProxyTarget = 'local
   };
 }
 
-export function getCurrentApiConfig(target: OpenAICompatProxyTarget = 'local'): CoworkApiConfig | null {
-  return resolveCurrentApiConfig(target).config;
+export function getCurrentApiConfig(
+  target: OpenAICompatProxyTarget = 'local',
+  override: ApiConfigOverride = {},
+): CoworkApiConfig | null {
+  return resolveCurrentApiConfig(target, override).config;
 }
 
 /**
@@ -385,7 +399,7 @@ export function getCurrentApiConfig(target: OpenAICompatProxyTarget = 'local'): 
  * without requiring the OpenAI compatibility proxy.
  * Used by OpenClaw config sync which has its own model routing.
  */
-export function resolveRawApiConfig(): ApiConfigResolution {
+export function resolveRawApiConfig(override: ApiConfigOverride = {}): ApiConfigResolution {
   const sqliteStore = getStore();
   if (!sqliteStore) {
     return { config: null, error: 'Store is not initialized.' };
@@ -394,7 +408,7 @@ export function resolveRawApiConfig(): ApiConfigResolution {
   if (!appConfig) {
     return { config: null, error: 'Application config not found.' };
   }
-  const { matched, error } = resolveMatchedProvider(appConfig);
+  const { matched, error } = resolveMatchedProvider(appConfig, override);
   if (!matched) {
     return { config: null, error };
   }
@@ -433,10 +447,12 @@ export function resolveRawApiConfig(): ApiConfigResolution {
     }
   }
   
-  console.log('[ClaudeSettings] resolved raw API config:', JSON.stringify({
-    ...matched,
-    providerConfig: { ...matched.providerConfig, apiKey: apiKey ? '***' : '' },
-  }));
+  if (process.env.WESIGHT_OPENCLAW_VERBOSE_LOGS === '1') {
+    console.debug('[ClaudeSettings] resolved API config for OpenClaw:', JSON.stringify({
+      ...matched,
+      providerConfig: { ...matched.providerConfig, apiKey: apiKey ? '***' : '' },
+    }));
+  }
   // OpenClaw's gateway requires a non-empty apiKey for every provider — even
   // local servers (Ollama, vLLM, etc.) that don't enforce auth.  When the user
   // leaves the key blank we supply a placeholder so the gateway doesn't reject

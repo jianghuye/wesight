@@ -9,12 +9,13 @@ import {
   DeepSeekTuiPermissionMode,
   ExternalAgentConfigSource,
 } from '../../../shared/cowork/constants';
+import type { CoworkSessionRuntimeSnapshot } from '../../../shared/cowork/runtimeSnapshot';
 import type {
   CoworkMessage,
   CoworkMessageMetadata,
   CoworkStore,
 } from '../../coworkStore';
-import { resolveRawApiConfig } from '../claudeSettings';
+import { type ApiConfigOverride,resolveRawApiConfig } from '../claudeSettings';
 import { getEnhancedEnvWithTmpdir } from '../coworkUtil';
 import {
   buildDeepSeekTuiRuntimeEnv,
@@ -61,6 +62,21 @@ type DeepSeekTuiRuntimeAdapterDeps = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+};
+
+const getApiOverrideFromRuntimeSnapshot = (
+  snapshot?: CoworkSessionRuntimeSnapshot | null,
+): ApiConfigOverride | undefined => {
+  if (!snapshot || snapshot.configSource === ExternalAgentConfigSource.LocalCli) {
+    return undefined;
+  }
+  if (!snapshot.modelId && !snapshot.providerKey && !snapshot.providerName) {
+    return undefined;
+  }
+  return {
+    modelId: snapshot.modelId,
+    providerName: snapshot.providerKey || snapshot.providerName,
+  };
 };
 
 const getString = (value: unknown): string => {
@@ -215,12 +231,14 @@ export class DeepSeekTuiRuntimeAdapter extends EventEmitter implements CoworkRun
     const selectedProvider = configSource === ExternalAgentConfigSource.LocalCli
       ? this.getCurrentProvider?.('deepseek_tui') ?? null
       : null;
-    const model = this.resolveRuntimeModel(selectedProvider);
+    const apiConfigOverride = getApiOverrideFromRuntimeSnapshot(options.runtimeSnapshot);
+    const model = this.resolveRuntimeModel(selectedProvider, apiConfigOverride);
     const env = await getEnhancedEnvWithTmpdir(cwd, 'local', {
       injectCoworkModelConfig: false,
+      apiConfigOverride,
     });
     if (configSource === ExternalAgentConfigSource.WesightModel) {
-      const resolved = resolveRawApiConfig();
+      const resolved = resolveRawApiConfig(apiConfigOverride);
       if (!resolved.config) {
         this.handleError(sessionId, resolved.error || '请先在设置的模型配置中选择可用于 DeepSeek-TUI 的模型。');
         return;
@@ -283,11 +301,14 @@ export class DeepSeekTuiRuntimeAdapter extends EventEmitter implements CoworkRun
     }
   }
 
-  private resolveRuntimeModel(provider: ExternalAgentProvider | null): string | null {
+  private resolveRuntimeModel(
+    provider: ExternalAgentProvider | null,
+    apiConfigOverride?: ApiConfigOverride,
+  ): string | null {
     if (provider?.summary.model.trim()) {
       return provider.summary.model.trim();
     }
-    const resolved = resolveRawApiConfig();
+    const resolved = resolveRawApiConfig(apiConfigOverride);
     return resolved.config?.model?.trim() || DEFAULT_DEEPSEEK_TUI_MODEL;
   }
 

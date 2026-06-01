@@ -189,6 +189,9 @@ export class HermesRuntimeAdapter extends EventEmitter implements CoworkRuntime 
         options.imageAttachments,
       );
       await this.callHermesApi(active, connection.url, connection.token, messages);
+      if (!active.assistantContent.trim()) {
+        throw new Error('Hermes Agent returned no visible response. Check the Hermes Agent model provider and gateway logs for details.');
+      }
       this.finalizeAssistant(active);
       this.activeSessions.delete(sessionId);
 

@@ -1,5 +1,4 @@
-import { Skill, MarketplaceSkill, MarketTag, LocalSkillInfo, LocalizedText } from '../types/skill';
-import { getSkillStoreUrl } from './endpoints';
+import { LocalizedText, LocalSkillInfo, MarketplaceSkill, MarketTag, Skill, SkillMarketplaceOptions } from '../types/skill';
 import { i18nService } from './i18n';
 
 export function resolveLocalizedText(text: string | LocalizedText): string {
@@ -224,22 +223,47 @@ class SkillService {
       return null;
     }
   }
-  async fetchMarketplaceSkills(): Promise<{ skills: MarketplaceSkill[]; tags: MarketTag[] }> {
+  async installMarketplaceSkill(skill: MarketplaceSkill): Promise<{
+    success: boolean;
+    skills?: Skill[];
+    error?: string;
+    auditReport?: any;
+    pendingInstallId?: string;
+  }> {
     try {
-      const response = await fetch(getSkillStoreUrl());
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      const result = await window.electron.skills.installMarketplaceSkill(skill);
+      if (result.success && result.skills) {
+        this.skills = result.skills;
       }
-      const json = await response.json();
-      const value = json?.data?.value;
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to install marketplace skill';
+      console.error('Failed to install marketplace skill:', error);
+      return { success: false, error: message };
+    }
+  }
+
+  async fetchMarketplaceSkills(options: SkillMarketplaceOptions = {}): Promise<{
+    skills: MarketplaceSkill[];
+    tags: MarketTag[];
+    cached?: boolean;
+    error?: string;
+  }> {
+    try {
+      const result = options.query?.trim()
+        ? await window.electron.skills.searchMarketplace(options)
+        : await window.electron.skills.fetchMarketplace(options);
+      if (!result.success) {
+        return { skills: [], tags: result.tags || [], error: result.error };
+      }
       // Store local skill descriptions for i18n lookup
-      const localSkills: LocalSkillInfo[] = Array.isArray(value?.localSkill) ? value.localSkill : [];
+      const localSkills: LocalSkillInfo[] = [];
       this.localSkillDescriptions.clear();
       for (const ls of localSkills) {
         this.localSkillDescriptions.set(ls.name, ls.description);
       }
-      const skills: MarketplaceSkill[] = Array.isArray(value?.marketplace) ? value.marketplace : [];
-      const tags: MarketTag[] = Array.isArray(value?.marketTags) ? value.marketTags : [];
+      const skills: MarketplaceSkill[] = Array.isArray(result.skills) ? result.skills : [];
+      const tags: MarketTag[] = Array.isArray(result.tags) ? result.tags : [];
       // Also store marketplace skill descriptions for i18n lookup (keyed by id)
       this.marketplaceSkillDescriptions.clear();
       for (const ms of skills) {
@@ -247,10 +271,10 @@ class SkillService {
           this.marketplaceSkillDescriptions.set(ms.id, ms.description);
         }
       }
-      return { skills, tags };
+      return { skills, tags, cached: result.cached, error: result.error };
     } catch (error) {
       console.error('Failed to fetch marketplace skills:', error);
-      return { skills: [], tags: [] };
+      return { skills: [], tags: [], error: error instanceof Error ? error.message : 'Failed to fetch marketplace skills' };
     }
   }
 

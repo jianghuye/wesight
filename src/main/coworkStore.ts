@@ -7,13 +7,19 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
+  AgentTeamWorkflow,
+  type AgentTeamWorkflow as AgentTeamWorkflowType,
   type CoworkAgentEngine,
-  CoworkAgentEngine as CoworkAgentEngineValue,
+  CoworkSessionKind,
+  type CoworkSessionKind as CoworkSessionKindType,
   DeepSeekTuiPermissionMode,
   type DeepSeekTuiPermissionMode as DeepSeekTuiPermissionModeType,
+  DefaultCoworkAgentEngine,
   ExternalAgentConfigSource,
   type ExternalAgentConfigSource as ExternalAgentConfigSourceType,
+  isAgentTeamWorkflow,
   isCoworkAgentEngine,
+  isCoworkSessionKind,
   isDeepSeekTuiPermissionMode,
   isExternalAgentConfigSource,
   isOpenCodePermissionMode,
@@ -23,6 +29,8 @@ import {
   QwenCodePermissionMode,
   type QwenCodePermissionMode as QwenCodePermissionModeType,
 } from '../shared/cowork/constants';
+import type { CoworkSessionRuntimeSnapshot } from '../shared/cowork/runtimeSnapshot';
+import { encodeCodexAppThreadId } from './libs/codexAppIds';
 import {
   type CoworkMemoryGuardLevel,
   extractTurnMemoryChanges,
@@ -330,6 +338,7 @@ export interface Agent {
   systemPrompt: string;
   identity: string;
   model: string;
+  agentEngine: CoworkAgentEngine;
   icon: string;
   skillIds: string[];
   enabled: boolean;
@@ -347,6 +356,7 @@ export interface CreateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  agentEngine?: CoworkAgentEngine;
   icon?: string;
   skillIds?: string[];
   source?: AgentSource;
@@ -359,12 +369,85 @@ export interface UpdateAgentRequest {
   systemPrompt?: string;
   identity?: string;
   model?: string;
+  agentEngine?: CoworkAgentEngine;
   icon?: string;
   skillIds?: string[];
   enabled?: boolean;
 }
 
-const COWORK_AGENT_ENGINE = CoworkAgentEngineValue.YdCowork;
+export interface AgentTeamMember {
+  agentId: string;
+  role: string;
+  order: number;
+}
+
+export interface AgentTeam {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  leadAgentId: string;
+  members: AgentTeamMember[];
+  defaultWorkflow: AgentTeamWorkflowType;
+  skillIds: string[];
+  enabled: boolean;
+  source: AgentSource;
+  presetId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const parseRuntimeSnapshot = (
+  value?: string | null,
+): CoworkSessionRuntimeSnapshot | null => {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<CoworkSessionRuntimeSnapshot>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!isCoworkAgentEngine(parsed.agentEngine)) return null;
+    return {
+      agentEngine: parsed.agentEngine,
+      engineLabel: typeof parsed.engineLabel === 'string' ? parsed.engineLabel : parsed.agentEngine,
+      providerKey: typeof parsed.providerKey === 'string' ? parsed.providerKey : null,
+      providerName: typeof parsed.providerName === 'string' ? parsed.providerName : null,
+      modelId: typeof parsed.modelId === 'string' ? parsed.modelId : null,
+      modelName: typeof parsed.modelName === 'string' ? parsed.modelName : null,
+      modelLabel: typeof parsed.modelLabel === 'string' && parsed.modelLabel.trim()
+        ? parsed.modelLabel
+        : parsed.modelName || parsed.modelId || '',
+      configSource: typeof parsed.configSource === 'string' ? parsed.configSource : null,
+      capturedAt: typeof parsed.capturedAt === 'number' ? parsed.capturedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+export interface CreateAgentTeamRequest {
+  id?: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  leadAgentId?: string;
+  members?: AgentTeamMember[];
+  defaultWorkflow?: AgentTeamWorkflowType;
+  skillIds?: string[];
+  source?: AgentSource;
+  presetId?: string;
+}
+
+export interface UpdateAgentTeamRequest {
+  name?: string;
+  description?: string;
+  icon?: string;
+  leadAgentId?: string;
+  members?: AgentTeamMember[];
+  defaultWorkflow?: AgentTeamWorkflowType;
+  skillIds?: string[];
+  enabled?: boolean;
+}
+
+const COWORK_AGENT_ENGINE = DefaultCoworkAgentEngine;
 
 function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
   if (isCoworkAgentEngine(value)) {
@@ -445,6 +528,7 @@ export interface CoworkSession {
   id: string;
   title: string;
   claudeSessionId: string | null;
+  codexAppThreadId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
   cwd: string;
@@ -452,6 +536,10 @@ export interface CoworkSession {
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
+  sessionKind: CoworkSessionKindType;
+  parentSessionId: string | null;
+  teamId: string | null;
+  runtimeSnapshot: CoworkSessionRuntimeSnapshot | null;
   messages: CoworkMessage[];
   createdAt: number;
   updatedAt: number;
@@ -460,9 +548,14 @@ export interface CoworkSession {
 export interface CoworkSessionSummary {
   id: string;
   title: string;
+  codexAppThreadId: string | null;
   status: CoworkSessionStatus;
   pinned: boolean;
   agentId: string;
+  sessionKind: CoworkSessionKindType;
+  parentSessionId: string | null;
+  teamId: string | null;
+  runtimeSnapshot: CoworkSessionRuntimeSnapshot | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -471,12 +564,17 @@ export interface CoworkImportedSessionInput {
   id: string;
   title: string;
   claudeSessionId: string | null;
+  codexAppThreadId?: string | null;
   status: CoworkSessionStatus;
   cwd: string;
   systemPrompt: string;
   executionMode: CoworkExecutionMode;
   activeSkillIds: string[];
   agentId: string;
+  sessionKind?: CoworkSessionKindType;
+  parentSessionId?: string | null;
+  teamId?: string | null;
+  runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -658,16 +756,29 @@ export class CoworkStore {
     systemPrompt: string = '',
     executionMode: CoworkExecutionMode = 'local',
     activeSkillIds: string[] = [],
-    agentId: string = 'main'
+    agentId: string = 'main',
+    options: {
+      sessionKind?: CoworkSessionKindType;
+      parentSessionId?: string | null;
+      teamId?: string | null;
+      runtimeSnapshot?: CoworkSessionRuntimeSnapshot | null;
+    } = {},
   ): CoworkSession {
     const id = uuidv4();
     const now = Date.now();
+    const sessionKind = isCoworkSessionKind(options.sessionKind)
+      ? options.sessionKind
+      : CoworkSessionKind.Single;
+    const parentSessionId = options.parentSessionId || null;
+    const teamId = options.teamId || null;
+    const runtimeSnapshot = options.runtimeSnapshot ?? null;
+    const runtimeSnapshotJson = runtimeSnapshot ? JSON.stringify(runtimeSnapshot) : null;
 
     this.db
       .prepare(
         `
-      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
-      VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, session_kind, parent_session_id, team_id, runtime_snapshot_json, pinned, created_at, updated_at)
+      VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `,
       )
       .run(
@@ -678,6 +789,10 @@ export class CoworkStore {
         executionMode,
         JSON.stringify(activeSkillIds),
         agentId,
+        sessionKind,
+        parentSessionId,
+        teamId,
+        runtimeSnapshotJson,
         now,
         now,
       );
@@ -686,6 +801,7 @@ export class CoworkStore {
       id,
       title,
       claudeSessionId: null,
+      codexAppThreadId: null,
       status: 'idle',
       pinned: false,
       cwd,
@@ -693,6 +809,10 @@ export class CoworkStore {
       executionMode,
       activeSkillIds,
       agentId,
+      sessionKind,
+      parentSessionId,
+      teamId,
+      runtimeSnapshot,
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -704,6 +824,7 @@ export class CoworkStore {
       id: string;
       title: string;
       claude_session_id: string | null;
+      codex_app_thread_id?: string | null;
       status: string;
       pinned?: number | null;
       cwd: string;
@@ -711,13 +832,17 @@ export class CoworkStore {
       execution_mode?: string | null;
       active_skill_ids?: string | null;
       agent_id?: string | null;
+      session_kind?: string | null;
+      parent_session_id?: string | null;
+      team_id?: string | null;
+      runtime_snapshot_json?: string | null;
       created_at: number;
       updated_at: number;
     }
 
     const row = this.getOne<SessionRow>(
       `
-      SELECT id, title, claude_session_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT id, title, claude_session_id, codex_app_thread_id, status, pinned, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, session_kind, parent_session_id, team_id, runtime_snapshot_json, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `,
@@ -742,6 +867,7 @@ export class CoworkStore {
       id: row.id,
       title: row.title,
       claudeSessionId: row.claude_session_id,
+      codexAppThreadId: row.codex_app_thread_id || null,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
       cwd: row.cwd,
@@ -749,6 +875,10 @@ export class CoworkStore {
       executionMode: (row.execution_mode as CoworkExecutionMode) || 'local',
       activeSkillIds,
       agentId: row.agent_id || 'main',
+      sessionKind: isCoworkSessionKind(row.session_kind) ? row.session_kind : CoworkSessionKind.Single,
+      parentSessionId: row.parent_session_id || null,
+      teamId: row.team_id || null,
+      runtimeSnapshot: parseRuntimeSnapshot(row.runtime_snapshot_json),
       messages,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -760,7 +890,7 @@ export class CoworkStore {
     updates: Partial<
       Pick<
         CoworkSession,
-        'title' | 'claudeSessionId' | 'status' | 'cwd' | 'systemPrompt' | 'executionMode'
+        'title' | 'claudeSessionId' | 'codexAppThreadId' | 'status' | 'cwd' | 'systemPrompt' | 'executionMode' | 'runtimeSnapshot'
       >
     >,
   ): void {
@@ -775,6 +905,10 @@ export class CoworkStore {
     if (updates.claudeSessionId !== undefined) {
       setClauses.push('claude_session_id = ?');
       values.push(updates.claudeSessionId);
+    }
+    if (updates.codexAppThreadId !== undefined) {
+      setClauses.push('codex_app_thread_id = ?');
+      values.push(updates.codexAppThreadId);
     }
     if (updates.status !== undefined) {
       setClauses.push('status = ?');
@@ -791,6 +925,10 @@ export class CoworkStore {
     if (updates.executionMode !== undefined) {
       setClauses.push('execution_mode = ?');
       values.push(updates.executionMode);
+    }
+    if (updates.runtimeSnapshot !== undefined) {
+      setClauses.push('runtime_snapshot_json = ?');
+      values.push(updates.runtimeSnapshot ? JSON.stringify(updates.runtimeSnapshot) : null);
     }
 
     values.push(id);
@@ -829,9 +967,14 @@ export class CoworkStore {
     interface SessionSummaryRow {
       id: string;
       title: string;
+      codex_app_thread_id: string | null;
       status: string;
       pinned: number | null;
       agent_id: string | null;
+      session_kind: string | null;
+      parent_session_id: string | null;
+      team_id: string | null;
+      runtime_snapshot_json: string | null;
       created_at: number;
       updated_at: number;
     }
@@ -840,17 +983,19 @@ export class CoworkStore {
     if (agentId) {
       rows = this.getAll<SessionSummaryRow>(
         `
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
+        SELECT id, title, codex_app_thread_id, status, pinned, agent_id, session_kind, parent_session_id, team_id, runtime_snapshot_json, created_at, updated_at
         FROM cowork_sessions
         WHERE agent_id = ?
+          AND COALESCE(session_kind, 'single') != ?
         ORDER BY pinned DESC, updated_at DESC
       `,
-        [agentId],
+        [agentId, CoworkSessionKind.TeamChild],
       );
     } else {
       rows = this.getAll<SessionSummaryRow>(`
-        SELECT id, title, status, pinned, agent_id, created_at, updated_at
+        SELECT id, title, codex_app_thread_id, status, pinned, agent_id, session_kind, parent_session_id, team_id, runtime_snapshot_json, created_at, updated_at
         FROM cowork_sessions
+        WHERE COALESCE(session_kind, 'single') != '${CoworkSessionKind.TeamChild}'
         ORDER BY pinned DESC, updated_at DESC
       `);
     }
@@ -858,12 +1003,34 @@ export class CoworkStore {
     return rows.map(row => ({
       id: row.id,
       title: row.title,
+      codexAppThreadId: row.codex_app_thread_id || null,
       status: row.status as CoworkSessionStatus,
       pinned: Boolean(row.pinned),
       agentId: row.agent_id || 'main',
+      sessionKind: isCoworkSessionKind(row.session_kind) ? row.session_kind : CoworkSessionKind.Single,
+      parentSessionId: row.parent_session_id || null,
+      teamId: row.team_id || null,
+      runtimeSnapshot: parseRuntimeSnapshot(row.runtime_snapshot_json),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  findSessionIdByCodexAppThreadId(threadId: string): string | null {
+    const normalized = threadId.trim();
+    if (!normalized) return null;
+    const row = this.getOne<{ id: string }>(
+      `
+      SELECT id
+      FROM cowork_sessions
+      WHERE codex_app_thread_id = ?
+         OR claude_session_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+      [normalized, encodeCodexAppThreadId(normalized)],
+    );
+    return row?.id ?? null;
   }
 
   resetRunningSessions(): number {
@@ -1116,20 +1283,29 @@ export class CoworkStore {
     interface ImportedSessionRow {
       title: string;
       claude_session_id: string | null;
+      codex_app_thread_id: string | null;
       status: string;
       cwd: string;
       system_prompt: string;
       execution_mode: string | null;
       active_skill_ids: string | null;
       agent_id: string | null;
+      session_kind: string | null;
+      parent_session_id: string | null;
+      team_id: string | null;
+      runtime_snapshot_json: string | null;
       created_at: number;
       updated_at: number;
     }
 
     const activeSkillIds = JSON.stringify(input.activeSkillIds);
+    const sessionKind = isCoworkSessionKind(input.sessionKind) ? input.sessionKind : CoworkSessionKind.Single;
+    const parentSessionId = input.parentSessionId || null;
+    const teamId = input.teamId || null;
+    const runtimeSnapshotJson = input.runtimeSnapshot ? JSON.stringify(input.runtimeSnapshot) : null;
     const existing = this.getOne<ImportedSessionRow>(
       `
-      SELECT title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, created_at, updated_at
+      SELECT title, claude_session_id, codex_app_thread_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, session_kind, parent_session_id, team_id, runtime_snapshot_json, created_at, updated_at
       FROM cowork_sessions
       WHERE id = ?
     `,
@@ -1140,20 +1316,25 @@ export class CoworkStore {
       this.db
         .prepare(
           `
-        INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        INSERT INTO cowork_sessions (id, title, claude_session_id, codex_app_thread_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, session_kind, parent_session_id, team_id, runtime_snapshot_json, pinned, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `,
         )
         .run(
           input.id,
           input.title,
           input.claudeSessionId,
+          input.codexAppThreadId || null,
           input.status,
           input.cwd,
           input.systemPrompt,
           input.executionMode,
           activeSkillIds,
           input.agentId,
+          sessionKind,
+          parentSessionId,
+          teamId,
+          runtimeSnapshotJson,
           input.createdAt,
           input.updatedAt,
         );
@@ -1162,12 +1343,17 @@ export class CoworkStore {
 
     const changed = existing.title !== input.title
       || existing.claude_session_id !== input.claudeSessionId
+      || (existing.codex_app_thread_id || null) !== (input.codexAppThreadId || null)
       || existing.status !== input.status
       || existing.cwd !== input.cwd
       || existing.system_prompt !== input.systemPrompt
       || (existing.execution_mode || 'local') !== input.executionMode
       || (existing.active_skill_ids || '[]') !== activeSkillIds
       || (existing.agent_id || 'main') !== input.agentId
+      || (existing.session_kind || CoworkSessionKind.Single) !== sessionKind
+      || (existing.parent_session_id || null) !== parentSessionId
+      || (existing.team_id || null) !== teamId
+      || (existing.runtime_snapshot_json || null) !== runtimeSnapshotJson
       || existing.created_at !== input.createdAt
       || existing.updated_at !== input.updatedAt;
 
@@ -1179,12 +1365,17 @@ export class CoworkStore {
       UPDATE cowork_sessions
       SET title = ?,
           claude_session_id = ?,
+          codex_app_thread_id = ?,
           status = ?,
           cwd = ?,
           system_prompt = ?,
           execution_mode = ?,
           active_skill_ids = ?,
           agent_id = ?,
+          session_kind = ?,
+          parent_session_id = ?,
+          team_id = ?,
+          runtime_snapshot_json = ?,
           created_at = ?,
           updated_at = ?
       WHERE id = ?
@@ -1193,12 +1384,17 @@ export class CoworkStore {
       .run(
         input.title,
         input.claudeSessionId,
+        input.codexAppThreadId || null,
         input.status,
         input.cwd,
         input.systemPrompt,
         input.executionMode,
         activeSkillIds,
         input.agentId,
+        sessionKind,
+        parentSessionId,
+        teamId,
+        runtimeSnapshotJson,
         input.createdAt,
         input.updatedAt,
         input.id,
@@ -2311,6 +2507,7 @@ export class CoworkStore {
       system_prompt: string;
       identity: string;
       model: string;
+      agent_engine?: string | null;
       icon: string;
       skill_ids: string;
       enabled: number;
@@ -2336,6 +2533,7 @@ export class CoworkStore {
       system_prompt: string;
       identity: string;
       model: string;
+      agent_engine?: string | null;
       icon: string;
       skill_ids: string;
       enabled: number;
@@ -2371,8 +2569,8 @@ export class CoworkStore {
     this.db
       .prepare(
         `
-      INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+      INSERT INTO agents (id, name, description, system_prompt, identity, model, agent_engine, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
     `,
       )
       .run(
@@ -2382,6 +2580,7 @@ export class CoworkStore {
         request.systemPrompt || '',
         request.identity || '',
         request.model || '',
+        normalizeCoworkAgentEngineValue(request.agentEngine),
         request.icon || '',
         JSON.stringify(request.skillIds || []),
         request.source || 'custom',
@@ -2421,6 +2620,10 @@ export class CoworkStore {
       setClauses.push('model = ?');
       values.push(updates.model);
     }
+    if (updates.agentEngine !== undefined) {
+      setClauses.push('agent_engine = ?');
+      values.push(normalizeCoworkAgentEngineValue(updates.agentEngine));
+    }
     if (updates.icon !== undefined) {
       setClauses.push('icon = ?');
       values.push(updates.icon);
@@ -2446,6 +2649,119 @@ export class CoworkStore {
     return true;
   }
 
+  // ========== Agent Team CRUD ==========
+
+  listAgentTeams(): AgentTeam[] {
+    const rows = this.getAll<AgentTeamRow>(`
+      SELECT * FROM agent_teams
+      ORDER BY created_at ASC
+    `);
+    return rows.map(row => this.mapAgentTeamRow(row));
+  }
+
+  getAgentTeam(id: string): AgentTeam | null {
+    const row = this.getOne<AgentTeamRow>('SELECT * FROM agent_teams WHERE id = ?', [id]);
+    return row ? this.mapAgentTeamRow(row) : null;
+  }
+
+  createAgentTeam(request: CreateAgentTeamRequest): AgentTeam {
+    const id =
+      request.id ||
+      request.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') ||
+      uuidv4();
+    const existing = this.getAgentTeam(id);
+    if (existing) {
+      return this.createAgentTeam({ ...request, id: `${id}-${Date.now()}` });
+    }
+
+    const now = Date.now();
+    const members = normalizeAgentTeamMembers(request.members || []);
+    const leadAgentId = request.leadAgentId || members[0]?.agentId || 'main';
+    const workflow = isAgentTeamWorkflow(request.defaultWorkflow)
+      ? request.defaultWorkflow
+      : AgentTeamWorkflow.LeadSequential;
+
+    this.db
+      .prepare(
+        `
+      INSERT INTO agent_teams (id, name, description, icon, lead_agent_id, members, default_workflow, skill_ids, enabled, source, preset_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+    `,
+      )
+      .run(
+        id,
+        request.name,
+        request.description || '',
+        request.icon || '',
+        leadAgentId,
+        JSON.stringify(members),
+        workflow,
+        JSON.stringify(request.skillIds || []),
+        request.source || 'custom',
+        request.presetId || '',
+        now,
+        now,
+      );
+
+    return this.getAgentTeam(id)!;
+  }
+
+  updateAgentTeam(id: string, updates: UpdateAgentTeamRequest): AgentTeam | null {
+    const existing = this.getAgentTeam(id);
+    if (!existing) return null;
+
+    const now = Date.now();
+    const setClauses: string[] = ['updated_at = ?'];
+    const values: (string | number | null)[] = [now];
+
+    if (updates.name !== undefined) {
+      setClauses.push('name = ?');
+      values.push(updates.name);
+    }
+    if (updates.description !== undefined) {
+      setClauses.push('description = ?');
+      values.push(updates.description);
+    }
+    if (updates.icon !== undefined) {
+      setClauses.push('icon = ?');
+      values.push(updates.icon);
+    }
+    if (updates.leadAgentId !== undefined) {
+      setClauses.push('lead_agent_id = ?');
+      values.push(updates.leadAgentId);
+    }
+    if (updates.members !== undefined) {
+      setClauses.push('members = ?');
+      values.push(JSON.stringify(normalizeAgentTeamMembers(updates.members)));
+    }
+    if (updates.defaultWorkflow !== undefined) {
+      setClauses.push('default_workflow = ?');
+      values.push(isAgentTeamWorkflow(updates.defaultWorkflow)
+        ? updates.defaultWorkflow
+        : AgentTeamWorkflow.LeadSequential);
+    }
+    if (updates.skillIds !== undefined) {
+      setClauses.push('skill_ids = ?');
+      values.push(JSON.stringify(updates.skillIds));
+    }
+    if (updates.enabled !== undefined) {
+      setClauses.push('enabled = ?');
+      values.push(updates.enabled ? 1 : 0);
+    }
+
+    values.push(id);
+    this.db.prepare(`UPDATE agent_teams SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+    return this.getAgentTeam(id);
+  }
+
+  deleteAgentTeam(id: string): boolean {
+    this.db.prepare('DELETE FROM agent_teams WHERE id = ?').run(id);
+    return true;
+  }
+
   private mapAgentRow(row: {
     id: string;
     name: string;
@@ -2453,6 +2769,7 @@ export class CoworkStore {
     system_prompt: string;
     identity: string;
     model: string;
+    agent_engine?: string | null;
     icon: string;
     skill_ids: string;
     enabled: number;
@@ -2475,6 +2792,7 @@ export class CoworkStore {
       systemPrompt: row.system_prompt,
       identity: row.identity,
       model: row.model,
+      agentEngine: normalizeCoworkAgentEngineValue(row.agent_engine),
       icon: row.icon,
       skillIds,
       enabled: Boolean(row.enabled),
@@ -2485,4 +2803,78 @@ export class CoworkStore {
       updatedAt: row.updated_at,
     };
   }
+
+  private mapAgentTeamRow(row: AgentTeamRow): AgentTeam {
+    let members: AgentTeamMember[] = [];
+    try {
+      members = normalizeAgentTeamMembers(JSON.parse(row.members));
+    } catch {
+      members = [];
+    }
+
+    let skillIds: string[] = [];
+    try {
+      const parsed = JSON.parse(row.skill_ids);
+      skillIds = Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string')
+        : [];
+    } catch {
+      skillIds = [];
+    }
+
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      icon: row.icon,
+      leadAgentId: row.lead_agent_id,
+      members,
+      defaultWorkflow: isAgentTeamWorkflow(row.default_workflow)
+        ? row.default_workflow
+        : AgentTeamWorkflow.LeadSequential,
+      skillIds,
+      enabled: Boolean(row.enabled),
+      source: row.source as AgentSource,
+      presetId: row.preset_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+}
+
+interface AgentTeamRow {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  lead_agent_id: string;
+  members: string;
+  default_workflow: string;
+  skill_ids: string;
+  enabled: number;
+  source: string;
+  preset_id: string;
+  created_at: number;
+  updated_at: number;
+}
+
+function normalizeAgentTeamMembers(value: unknown): AgentTeamMember[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item, index): AgentTeamMember | null => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      const agentId = typeof record.agentId === 'string' && record.agentId.trim()
+        ? record.agentId.trim()
+        : null;
+      if (!agentId) return null;
+      const role = typeof record.role === 'string' ? record.role.trim() : '';
+      const orderValue = typeof record.order === 'number' && Number.isFinite(record.order)
+        ? Math.floor(record.order)
+        : index;
+      return { agentId, role, order: orderValue };
+    })
+    .filter((item): item is AgentTeamMember => Boolean(item))
+    .sort((left, right) => left.order - right.order)
+    .map((item, index) => ({ ...item, order: index }));
 }

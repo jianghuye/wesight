@@ -105,6 +105,17 @@ const INSTALL_TARGETS: Record<CliAppType, InstallTarget> = {
       },
     ],
   },
+  grok: {
+    appType: 'grok',
+    displayName: 'Grok Build',
+    command: 'grok',
+    methods: [
+      {
+        id: 'official-installer',
+        scriptUrl: 'https://x.ai/cli/install.sh',
+      },
+    ],
+  },
   qwen: {
     appType: 'qwen',
     displayName: 'Qwen Code',

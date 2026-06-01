@@ -25,13 +25,18 @@ const setupDb = (): void => {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       claude_session_id TEXT,
+      codex_app_thread_id TEXT,
       status TEXT NOT NULL DEFAULT 'idle',
       pinned INTEGER NOT NULL DEFAULT 0,
       cwd TEXT NOT NULL,
       system_prompt TEXT NOT NULL DEFAULT '',
       execution_mode TEXT,
       active_skill_ids TEXT,
+      runtime_snapshot_json TEXT,
       agent_id TEXT NOT NULL DEFAULT 'main',
+      session_kind TEXT NOT NULL DEFAULT 'single',
+      parent_session_id TEXT,
+      team_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );

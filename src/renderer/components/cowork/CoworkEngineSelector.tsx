@@ -17,6 +17,9 @@ import type {
 
 interface CoworkEngineSelectorProps {
   dropdownDirection?: 'up' | 'down';
+  value?: CoworkAgentEngineType;
+  readOnly?: boolean;
+  readOnlyTitle?: string;
 }
 
 const ENGINE_OPTIONS: Array<{
@@ -50,9 +53,19 @@ const ENGINE_OPTIONS: Array<{
     hintKey: 'coworkAgentEngineCodexHint',
   },
   {
+    engine: CoworkAgentEngine.CodexApp,
+    labelKey: 'coworkAgentEngineCodexApp',
+    hintKey: 'coworkAgentEngineCodexAppHint',
+  },
+  {
     engine: CoworkAgentEngine.OpenCode,
     labelKey: 'coworkAgentEngineOpenCode',
     hintKey: 'coworkAgentEngineOpenCodeHint',
+  },
+  {
+    engine: CoworkAgentEngine.GrokBuild,
+    labelKey: 'coworkAgentEngineGrokBuild',
+    hintKey: 'coworkAgentEngineGrokBuildHint',
   },
   {
     engine: CoworkAgentEngine.QwenCode,
@@ -70,14 +83,19 @@ const isCliEngine = (engine: CoworkAgentEngineType): boolean => {
   return engine === CoworkAgentEngine.ClaudeCode
     || engine === CoworkAgentEngine.Codex
     || engine === CoworkAgentEngine.OpenCode
+    || engine === CoworkAgentEngine.GrokBuild
     || engine === CoworkAgentEngine.QwenCode
     || engine === CoworkAgentEngine.DeepSeekTui;
 };
 
 const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
   dropdownDirection = 'down',
+  value,
+  readOnly = false,
+  readOnlyTitle,
 }) => {
   const selectedEngine = useSelector((state: RootState) => state.cowork.config.agentEngine);
+  const effectiveEngine = value ?? selectedEngine;
   const [isOpen, setIsOpen] = React.useState(false);
   const [isUpdating, setIsUpdating] = React.useState(false);
   const [pendingEngine, setPendingEngine] = React.useState<CoworkAgentEngineType | null>(null);
@@ -85,7 +103,7 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
   const [snapshot, setSnapshot] = React.useState<ExternalAgentEnvironmentSnapshot | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
-  const selectedOption = ENGINE_OPTIONS.find((option) => option.engine === selectedEngine)
+  const selectedOption = ENGINE_OPTIONS.find((option) => option.engine === effectiveEngine)
     ?? ENGINE_OPTIONS[1];
 
   React.useEffect(() => {
@@ -127,7 +145,7 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
     : 'top-full mt-1';
 
   const selectEngine = async (engine: CoworkAgentEngineType) => {
-    if (engine === selectedEngine || isUpdating) {
+    if (readOnly || engine === selectedEngine || isUpdating) {
       setIsOpen(false);
       return;
     }
@@ -154,6 +172,20 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
   };
 
   const renderCliStatus = (engine: CoworkAgentEngineType) => {
+    if (engine === CoworkAgentEngine.CodexApp) {
+      const status = snapshot?.codexApp;
+      if (!status) return null;
+      const ready = status.cliFound && status.appInstalled && status.appServerSupported;
+      return (
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-secondary">
+          <span className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-green-500' : 'bg-amber-500'}`} />
+          <span className="truncate">
+            {i18nService.t(ready ? 'coworkAgentCodexAppReady' : 'coworkAgentCodexAppMissing')}
+            {status.appRunning ? ` · ${i18nService.t('coworkAgentCodexAppRunning')}` : ''}
+          </span>
+        </div>
+      );
+    }
     const status = getCliStatus(engine);
     if (!isCliEngine(engine) || !status) return null;
     return (
@@ -171,20 +203,23 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
     <div ref={containerRef} className="relative">
       <button
         type="button"
-        onClick={() => setIsOpen((value) => !value)}
+        onClick={() => {
+          if (readOnly) return;
+          setIsOpen((value) => !value);
+        }}
         className={`flex h-8 items-center gap-2 rounded-lg px-2.5 text-sm text-foreground transition-colors hover:bg-surface-raised ${isOpen ? 'bg-surface-raised' : ''}`}
-        title={i18nService.t('coworkAgentEngineSelect')}
-        aria-label={i18nService.t('coworkAgentEngineSelect')}
-        disabled={isUpdating}
+        title={readOnlyTitle || i18nService.t('coworkAgentEngineSelect')}
+        aria-label={readOnlyTitle || i18nService.t('coworkAgentEngineSelect')}
+        disabled={isUpdating || readOnly}
       >
         <CpuChipIcon className="h-4 w-4 text-secondary" />
         <span className="max-w-[120px] truncate font-medium">
           {i18nService.t(selectedOption.labelKey)}
         </span>
-        <ChevronDownIcon className="h-4 w-4 text-secondary" />
+        {!readOnly && <ChevronDownIcon className="h-4 w-4 text-secondary" />}
       </button>
 
-      {isOpen && (
+      {isOpen && !readOnly && (
         <div className={`absolute right-0 ${dropdownPositionClass} z-50 w-80 overflow-hidden rounded-xl border border-border bg-surface shadow-popover popover-enter`}>
           {isUpdating && (
             <div className="border-b border-border px-3.5 py-3">

@@ -2,10 +2,12 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import {
   CoworkAgentEngine,
   DeepSeekTuiPermissionMode,
+  DefaultCoworkAgentEngine,
   ExternalAgentConfigSource,
   OpenCodePermissionMode,
   QwenCodePermissionMode,
 } from '@shared/cowork/constants';
+import { type CoworkFileActivity,CoworkFileActivityStatus } from '@shared/cowork/fileActivity';
 
 import type {
   CoworkConfig,
@@ -36,6 +38,7 @@ interface CoworkState {
   isStreaming: boolean;
   remoteManaged: boolean;
   pendingPermissions: CoworkPermissionRequest[];
+  liveFileActivitiesBySession: Record<string, CoworkFileActivity[]>;
   config: CoworkConfig;
 }
 
@@ -50,11 +53,12 @@ const initialState: CoworkState = {
   isStreaming: false,
   remoteManaged: false,
   pendingPermissions: [],
+  liveFileActivitiesBySession: {},
   config: {
     workingDirectory: '',
     systemPrompt: '',
     executionMode: 'local',
-    agentEngine: CoworkAgentEngine.YdCowork,
+    agentEngine: DefaultCoworkAgentEngine,
     openclawConfigSource: ExternalAgentConfigSource.LocalCli,
     claudeCodeConfigSource: ExternalAgentConfigSource.WesightModel,
     codexConfigSource: ExternalAgentConfigSource.WesightModel,
@@ -155,6 +159,11 @@ const coworkSlice = createSlice({
             title,
             status,
             pinned: pinned ?? false,
+            agentId: action.payload.agentId,
+            sessionKind: action.payload.sessionKind,
+            parentSessionId: action.payload.parentSessionId,
+            teamId: action.payload.teamId,
+            runtimeSnapshot: action.payload.runtimeSnapshot,
             createdAt,
             updatedAt,
           };
@@ -187,6 +196,11 @@ const coworkSlice = createSlice({
         title: action.payload.title,
         status: action.payload.status,
         pinned: action.payload.pinned ?? false,
+        agentId: action.payload.agentId,
+        sessionKind: action.payload.sessionKind,
+        parentSessionId: action.payload.parentSessionId,
+        teamId: action.payload.teamId,
+        runtimeSnapshot: action.payload.runtimeSnapshot,
         createdAt: action.payload.createdAt,
         updatedAt: action.payload.updatedAt,
       };
@@ -217,10 +231,14 @@ const coworkSlice = createSlice({
 
     deleteSession(state, action: PayloadAction<string>) {
       removeSessionFromState(state, action.payload);
+      delete state.liveFileActivitiesBySession[action.payload];
     },
 
     deleteSessions(state, action: PayloadAction<string[]>) {
       removeSessionsFromState(state, action.payload);
+      action.payload.forEach((sessionId) => {
+        delete state.liveFileActivitiesBySession[sessionId];
+      });
     },
 
     addMessage(state, action: PayloadAction<{ sessionId: string; message: CoworkMessage }>) {
@@ -316,6 +334,28 @@ const coworkSlice = createSlice({
       state.pendingPermissions = [];
     },
 
+    upsertLiveFileActivity(state, action: PayloadAction<{ sessionId: string; activity: CoworkFileActivity }>) {
+      const { sessionId, activity } = action.payload;
+      const existing = state.liveFileActivitiesBySession[sessionId] ?? [];
+      if (activity.status === CoworkFileActivityStatus.Deleted) {
+        const nextActivities = existing.filter((item) => item.filePath !== activity.filePath);
+        if (nextActivities.length === 0) {
+          delete state.liveFileActivitiesBySession[sessionId];
+        } else {
+          state.liveFileActivitiesBySession[sessionId] = nextActivities;
+        }
+        return;
+      }
+      state.liveFileActivitiesBySession[sessionId] = [
+        activity,
+        ...existing.filter((item) => item.filePath !== activity.filePath),
+      ].slice(0, 20);
+    },
+
+    clearLiveFileActivities(state, action: PayloadAction<string>) {
+      delete state.liveFileActivitiesBySession[action.payload];
+    },
+
     setConfig(state, action: PayloadAction<CoworkConfig>) {
       state.config = action.payload;
     },
@@ -375,6 +415,8 @@ export const {
   enqueuePendingPermission,
   dequeuePendingPermission,
   clearPendingPermissions,
+  upsertLiveFileActivity,
+  clearLiveFileActivities,
   setConfig,
   updateConfig,
   clearCurrentSession,
