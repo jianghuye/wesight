@@ -6684,6 +6684,7 @@ if (!gotTheLock) {
     method: string;
     headers: Record<string, string>;
     body?: string;
+    expectedStatuses?: number[];
   }) => {
     console.log(`[api:fetch] ${options.method} ${options.url}, headers: ${JSON.stringify(options.headers)}, body: ${options.body}`);
 
@@ -6716,7 +6717,13 @@ if (!gotTheLock) {
 
     try {
       let result = await doFetch(options.headers);
-      console.log(`[api:fetch] ${options.method} ${options.url} -> ${result.status} ${result.statusText}`, typeof result.data === 'object' ? JSON.stringify(result.data) : result.data);
+      const isExpectedStatus = Array.isArray(options.expectedStatuses)
+        && options.expectedStatuses.includes(result.status);
+      if (isExpectedStatus) {
+        console.log(`[api:fetch] ${options.method} ${options.url} -> ${result.status} ${result.statusText} (expected)`);
+      } else {
+        console.log(`[api:fetch] ${options.method} ${options.url} -> ${result.status} ${result.statusText}`, typeof result.data === 'object' ? JSON.stringify(result.data) : result.data);
+      }
 
       // Auto-retry once for Copilot 401/403
       if (!result.ok && (result.status === 401 || result.status === 403) && isCopilotUrl(options.url)) {

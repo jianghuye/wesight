@@ -1122,26 +1122,31 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
     env.HOME = app.getPath('home');
   }
 
-  // Resolve user's shell PATH so that node, npm, and other tools are findable
-  const userPath = resolveUserShellPath();
-  if (userPath) {
-    env.PATH = userPath;
-    coworkLog('INFO', 'applyPackagedEnvOverrides', `Resolved user shell PATH (${userPath.split(delimiter).length} entries)`);
-    for (const entry of userPath.split(delimiter)) {
-      coworkLog('INFO', 'applyPackagedEnvOverrides', `  PATH entry: ${entry} (exists: ${existsSync(entry)})`);
-    }
+  // Resolve user's shell PATH so that node, npm, and other tools are findable.
+  // Windows already reconstructs PATH from the registry and bundled runtimes above.
+  if (process.platform === 'win32') {
+    coworkLog('INFO', 'applyPackagedEnvOverrides', 'Windows packaged mode: using reconstructed PATH from system, registry, Git, Python, and bundled Node shims');
   } else {
-    // Fallback: append common node installation paths
-    const home = env.HOME || app.getPath('home');
-    const commonPaths = [
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      `${home}/.nvm/current/bin`,
-      `${home}/.volta/bin`,
-      `${home}/.fnm/current/bin`,
-    ];
-    env.PATH = [env.PATH, ...commonPaths].filter(Boolean).join(delimiter);
-    coworkLog('WARN', 'applyPackagedEnvOverrides', `Failed to resolve user shell PATH, using fallback common paths`);
+    const userPath = resolveUserShellPath();
+    if (userPath) {
+      env.PATH = userPath;
+      coworkLog('INFO', 'applyPackagedEnvOverrides', `Resolved user shell PATH (${userPath.split(delimiter).length} entries)`);
+      for (const entry of userPath.split(delimiter)) {
+        coworkLog('INFO', 'applyPackagedEnvOverrides', `  PATH entry: ${entry} (exists: ${existsSync(entry)})`);
+      }
+    } else {
+      // Fallback: append common node installation paths.
+      const home = env.HOME || app.getPath('home');
+      const commonPaths = [
+        '/usr/local/bin',
+        '/opt/homebrew/bin',
+        `${home}/.nvm/current/bin`,
+        `${home}/.volta/bin`,
+        `${home}/.fnm/current/bin`,
+      ];
+      env.PATH = [env.PATH, ...commonPaths].filter(Boolean).join(delimiter);
+      coworkLog('WARN', 'applyPackagedEnvOverrides', `Failed to resolve user shell PATH, using fallback common paths`);
+    }
   }
 
   const resourcesPath = process.resourcesPath;
@@ -1433,7 +1438,7 @@ export async function getEnhancedEnvWithTmpdir(
 
 const SESSION_TITLE_FALLBACK = 'New Session';
 const SESSION_TITLE_MAX_CHARS = 50;
-const SESSION_TITLE_TIMEOUT_MS = 8000;
+const SESSION_TITLE_TIMEOUT_MS = 15000;
 const COWORK_MODEL_PROBE_TIMEOUT_MS = 20000;
 
 type SessionTitleApiConfig =
@@ -1693,7 +1698,7 @@ export async function generateSessionTitle(userIntent: string | null): Promise<s
       : config.protocol === CoworkModelProtocol.OpenAICompat
         ? buildOpenAIChatCompletionsUrl(config.baseURL)
       : buildAnthropicMessagesUrl(config.baseURL);
-    const prompt = `Generate a short title from this input, keep the same language, return plain text only (no markdown), and keep it within ${SESSION_TITLE_MAX_CHARS} characters: ${normalizedInput}`;
+    const prompt = `Return one plain-text title in the same language, max ${SESSION_TITLE_MAX_CHARS} chars: ${normalizedInput}`;
     console.log(`[cowork-title] Generating title: protocol=${config.protocol}, baseURL=${config.baseURL}, requestUrl=${url}, model=${config.model}`);
 
     const response = await fetch(url, {
@@ -1726,7 +1731,8 @@ export async function generateSessionTitle(userIntent: string | null): Promise<s
             ? {
                 model: config.model,
                 messages: [{ role: 'user', content: prompt }],
-                max_tokens: 80,
+                // Reasoning models may spend hidden tokens before emitting text.
+                max_tokens: 128,
                 temperature: 0,
                 stream: false,
               }
