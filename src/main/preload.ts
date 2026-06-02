@@ -423,13 +423,13 @@ contextBridge.exposeInMainWorld('electron', {
     // Stream event listeners
     onStreamMessage: (callback: (data: { sessionId: string; message: any }) => void) => {
       const handler = (_event: any, data: { sessionId: string; message: any }) => callback(data);
-      ipcRenderer.on('cowork:stream:message', handler);
-      return () => ipcRenderer.removeListener('cowork:stream:message', handler);
+      ipcRenderer.on(CoworkIpcChannel.StreamMessage, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamMessage, handler);
     },
     onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string }) => void) => {
       const handler = (_event: any, data: { sessionId: string; messageId: string; content: string }) => callback(data);
-      ipcRenderer.on('cowork:stream:messageUpdate', handler);
-      return () => ipcRenderer.removeListener('cowork:stream:messageUpdate', handler);
+      ipcRenderer.on(CoworkIpcChannel.StreamMessageUpdate, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamMessageUpdate, handler);
     },
     onStreamFileActivity: (callback: (data: { sessionId: string; activity: CoworkFileActivity }) => void) => {
       const handler = (_event: IpcRendererEvent, data: { sessionId: string; activity: CoworkFileActivity }) => callback(data);
@@ -438,23 +438,23 @@ contextBridge.exposeInMainWorld('electron', {
     },
     onStreamPermission: (callback: (data: { sessionId: string; request: any }) => void) => {
       const handler = (_event: any, data: { sessionId: string; request: any }) => callback(data);
-      ipcRenderer.on('cowork:stream:permission', handler);
-      return () => ipcRenderer.removeListener('cowork:stream:permission', handler);
+      ipcRenderer.on(CoworkIpcChannel.StreamPermission, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamPermission, handler);
     },
     onStreamPermissionDismiss: (callback: (data: { requestId: string }) => void) => {
       const handler = (_event: any, data: { requestId: string }) => callback(data);
-      ipcRenderer.on('cowork:stream:permissionDismiss', handler);
-      return () => ipcRenderer.removeListener('cowork:stream:permissionDismiss', handler);
+      ipcRenderer.on(CoworkIpcChannel.StreamPermissionDismiss, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamPermissionDismiss, handler);
     },
     onStreamComplete: (callback: (data: { sessionId: string; claudeSessionId: string | null }) => void) => {
       const handler = (_event: any, data: { sessionId: string; claudeSessionId: string | null }) => callback(data);
-      ipcRenderer.on('cowork:stream:complete', handler);
-      return () => ipcRenderer.removeListener('cowork:stream:complete', handler);
+      ipcRenderer.on(CoworkIpcChannel.StreamComplete, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamComplete, handler);
     },
     onStreamError: (callback: (data: { sessionId: string; error: string }) => void) => {
       const handler = (_event: any, data: { sessionId: string; error: string }) => callback(data);
-      ipcRenderer.on('cowork:stream:error', handler);
-      return () => ipcRenderer.removeListener('cowork:stream:error', handler);
+      ipcRenderer.on(CoworkIpcChannel.StreamError, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamError, handler);
     },
     onSessionsChanged: (callback: () => void) => {
       const handler = () => callback();

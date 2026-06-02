@@ -98,7 +98,6 @@ export interface PerformanceSnapshot {
 
 const DEFAULT_DB_SLOW_THRESHOLD_MS = 100;
 const MAX_SLOW_DB_OPERATIONS = 200;
-const SESSION_RATE_WINDOW_MS = 1000;
 
 const processStartedAt = performance.now();
 const startupTimings: Partial<Record<PerformanceTimingName, number>> = {};
@@ -108,7 +107,12 @@ const ipcByType = new Map<string, {
   maxPayloadBytes: number;
   windowCount: number;
 }>();
-const ipcSessionWindows = new Map<string, number[]>();
+const ipcSessions = new Map<string, {
+  eventCount: number;
+  currentBucketSecond: number;
+  currentBucketCount: number;
+  maxEventsPerSecond: number;
+}>();
 const dbByOperation = new Map<string, {
   count: number;
   totalDurationMs: number;
@@ -128,11 +132,32 @@ export function nowMs(): number {
   return performance.now();
 }
 
-export function markTiming(name: PerformanceTimingName, startedAt: number = processStartedAt): number {
+export function markTiming(
+  name: PerformanceTimingName,
+  startedAt: number = processStartedAt,
+  options: { overwrite?: boolean } = {},
+): number {
   const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+  if (startupTimings[name] !== undefined && options.overwrite !== true) {
+    return startupTimings[name] ?? durationMs;
+  }
   startupTimings[name] = durationMs;
   console.debug(`[Performance] recorded ${name} in ${durationMs}ms`);
   return durationMs;
+}
+
+export function markTimingValue(
+  name: PerformanceTimingName,
+  durationMs: number,
+  options: { overwrite?: boolean } = {},
+): number {
+  const normalizedDurationMs = Math.max(0, Math.round(durationMs));
+  if (startupTimings[name] !== undefined && options.overwrite !== true) {
+    return startupTimings[name] ?? normalizedDurationMs;
+  }
+  startupTimings[name] = normalizedDurationMs;
+  console.debug(`[Performance] recorded ${name} in ${normalizedDurationMs}ms`);
+  return normalizedDurationMs;
 }
 
 export async function measureAsync<T>(
@@ -177,13 +202,25 @@ export function recordIpcSend(input: IpcMetricInput): void {
   ipcByType.set(input.type, summary);
 
   if (input.sessionId) {
-    const now = Date.now();
-    const window = ipcSessionWindows.get(input.sessionId) ?? [];
-    window.push(now);
-    while (window.length > 0 && now - window[0] > SESSION_RATE_WINDOW_MS) {
-      window.shift();
+    const bucketSecond = Math.floor(Date.now() / 1000);
+    const sessionSummary = ipcSessions.get(input.sessionId) ?? {
+      eventCount: 0,
+      currentBucketSecond: bucketSecond,
+      currentBucketCount: 0,
+      maxEventsPerSecond: 0,
+    };
+    sessionSummary.eventCount += 1;
+    if (sessionSummary.currentBucketSecond === bucketSecond) {
+      sessionSummary.currentBucketCount += 1;
+    } else {
+      sessionSummary.currentBucketSecond = bucketSecond;
+      sessionSummary.currentBucketCount = 1;
     }
-    ipcSessionWindows.set(input.sessionId, window);
+    sessionSummary.maxEventsPerSecond = Math.max(
+      sessionSummary.maxEventsPerSecond,
+      sessionSummary.currentBucketCount,
+    );
+    ipcSessions.set(input.sessionId, sessionSummary);
   }
 }
 
@@ -246,7 +283,7 @@ export function resetPerformanceMetricsForTesting(): void {
     delete startupTimings[key];
   }
   ipcByType.clear();
-  ipcSessionWindows.clear();
+  ipcSessions.clear();
   dbByOperation.clear();
   slowDbOperations.length = 0;
   totalIpcEvents = 0;
@@ -275,10 +312,10 @@ export function getPerformanceSnapshot(
     };
   }
 
-  const sessions = Array.from(ipcSessionWindows.entries()).map(([sessionId, events]) => ({
+  const sessions = Array.from(ipcSessions.entries()).map(([sessionId, summary]) => ({
     sessionId,
-    eventCount: events.length,
-    maxEventsPerSecond: events.length,
+    eventCount: summary.eventCount,
+    maxEventsPerSecond: summary.maxEventsPerSecond,
   }));
 
   return {

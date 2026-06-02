@@ -164,6 +164,7 @@ import { startOpenClawTokenProxy, stopOpenClawTokenProxy } from './libs/openclaw
 import {
   getPerformanceSnapshot,
   markTiming,
+  markTimingValue,
   nowMs,
   recordIpcSend,
 } from './libs/performanceMetrics';
@@ -1927,11 +1928,11 @@ const bindCoworkRuntimeForwarder = (): void => {
         recordIpcSend({
           type: 'message',
           sessionId,
-          channel: 'cowork:stream:message',
+          channel: CoworkIpcChannel.StreamMessage,
           payload,
           windowCount: 1,
         });
-        win.webContents.send('cowork:stream:message', payload);
+        win.webContents.send(CoworkIpcChannel.StreamMessage, payload);
       } catch (error) {
         console.error('Failed to forward cowork message:', error);
       }
@@ -1950,11 +1951,11 @@ const bindCoworkRuntimeForwarder = (): void => {
         recordIpcSend({
           type: 'messageUpdate',
           sessionId,
-          channel: 'cowork:stream:messageUpdate',
+          channel: CoworkIpcChannel.StreamMessageUpdate,
           payload,
           windowCount: 1,
         });
-        win.webContents.send('cowork:stream:messageUpdate', payload);
+        win.webContents.send(CoworkIpcChannel.StreamMessageUpdate, payload);
       } catch (error) {
         console.error('Failed to forward cowork message update:', error);
       }
@@ -1975,11 +1976,11 @@ const bindCoworkRuntimeForwarder = (): void => {
         recordIpcSend({
           type: 'permission',
           sessionId,
-          channel: 'cowork:stream:permission',
+          channel: CoworkIpcChannel.StreamPermission,
           payload,
           windowCount: 1,
         });
-        win.webContents.send('cowork:stream:permission', payload);
+        win.webContents.send(CoworkIpcChannel.StreamPermission, payload);
       } catch (error) {
         console.error('Failed to forward cowork permission request:', error);
       }
@@ -1996,11 +1997,11 @@ const bindCoworkRuntimeForwarder = (): void => {
       recordIpcSend({
         type: 'complete',
         sessionId,
-        channel: 'cowork:stream:complete',
+        channel: CoworkIpcChannel.StreamComplete,
         payload,
         windowCount: 1,
       });
-      win.webContents.send('cowork:stream:complete', payload);
+      win.webContents.send(CoworkIpcChannel.StreamComplete, payload);
     });
     // If session used a server model, notify renderer to refresh quota
     try {
@@ -2029,11 +2030,11 @@ const bindCoworkRuntimeForwarder = (): void => {
       recordIpcSend({
         type: 'error',
         sessionId,
-        channel: 'cowork:stream:error',
+        channel: CoworkIpcChannel.StreamError,
         payload,
         windowCount: 1,
       });
-      win.webContents.send('cowork:stream:error', payload);
+      win.webContents.send(CoworkIpcChannel.StreamError, payload);
     });
   });
 
@@ -2050,7 +2051,7 @@ const broadcastCoworkMessage = (sessionId: string, message: CoworkMessage): void
   BrowserWindow.getAllWindows().forEach((win) => {
     if (win.isDestroyed()) return;
     try {
-      win.webContents.send('cowork:stream:message', { sessionId, message: safeMessage });
+      win.webContents.send(CoworkIpcChannel.StreamMessage, { sessionId, message: safeMessage });
     } catch (error) {
       console.error('[CoworkForwarder] failed to broadcast manual message:', error);
     }
@@ -2061,7 +2062,7 @@ const broadcastCoworkMessage = (sessionId: string, message: CoworkMessage): void
 const broadcastCoworkComplete = (sessionId: string): void => {
   BrowserWindow.getAllWindows().forEach((win) => {
     if (win.isDestroyed()) return;
-    win.webContents.send('cowork:stream:complete', { sessionId, claudeSessionId: null });
+    win.webContents.send(CoworkIpcChannel.StreamComplete, { sessionId, claudeSessionId: null });
   });
   broadcastCoworkSessionsChanged();
 };
@@ -2069,7 +2070,7 @@ const broadcastCoworkComplete = (sessionId: string): void => {
 const broadcastCoworkError = (sessionId: string, error: string): void => {
   BrowserWindow.getAllWindows().forEach((win) => {
     if (win.isDestroyed()) return;
-    win.webContents.send('cowork:stream:error', { sessionId, error });
+    win.webContents.send(CoworkIpcChannel.StreamError, { sessionId, error });
   });
   broadcastCoworkSessionsChanged();
 };
@@ -2265,7 +2266,7 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
       windows.forEach((win) => {
         if (win.isDestroyed()) return;
         try {
-          win.webContents.send('cowork:stream:permission', {
+          win.webContents.send(CoworkIpcChannel.StreamPermission, {
             sessionId: '__askuser__',
             request: {
               requestId: request.requestId,
@@ -2286,7 +2287,7 @@ const startMcpBridge = (): Promise<McpBridgeConfig | null> => {
       windows.forEach((win) => {
         if (win.isDestroyed()) return;
         try {
-          win.webContents.send('cowork:stream:permissionDismiss', { requestId });
+          win.webContents.send(CoworkIpcChannel.StreamPermissionDismiss, { requestId });
         } catch {
           // ignore
         }
@@ -4307,7 +4308,7 @@ if (!gotTheLock) {
         const windows = BrowserWindow.getAllWindows();
         windows.forEach((win) => {
           if (win.isDestroyed()) return;
-          win.webContents.send('cowork:stream:error', { sessionId: session.id, error: errorMessage });
+          win.webContents.send(CoworkIpcChannel.StreamError, { sessionId: session.id, error: errorMessage });
         });
       });
 
@@ -4403,7 +4404,7 @@ if (!gotTheLock) {
         const windows = BrowserWindow.getAllWindows();
         windows.forEach((win) => {
           if (win.isDestroyed()) return;
-          win.webContents.send('cowork:stream:error', { sessionId: options.sessionId, error: errorMessage });
+          win.webContents.send(CoworkIpcChannel.StreamError, { sessionId: options.sessionId, error: errorMessage });
         });
       });
 
@@ -5039,19 +5040,19 @@ if (!gotTheLock) {
   }) => {
     const firstPaintMs = Number(input?.firstPaintMs);
     if (Number.isFinite(firstPaintMs) && firstPaintMs >= 0) {
-      markTiming('first_paint_ms', nowMs() - firstPaintMs);
+      markTimingValue('first_paint_ms', firstPaintMs);
     }
     const firstInteractiveMs = Number(input?.firstInteractiveMs);
     if (Number.isFinite(firstInteractiveMs) && firstInteractiveMs >= 0) {
-      markTiming('first_interactive_ms', nowMs() - firstInteractiveMs);
+      markTimingValue('first_interactive_ms', firstInteractiveMs);
     }
     const configLoadedMs = Number(input?.configLoadedMs);
     if (Number.isFinite(configLoadedMs) && configLoadedMs >= 0) {
-      markTiming('config_loaded_ms', nowMs() - configLoadedMs);
+      markTimingValue('config_loaded_ms', configLoadedMs);
     }
     const recentSessionsLoadedMs = Number(input?.recentSessionsLoadedMs);
     if (Number.isFinite(recentSessionsLoadedMs) && recentSessionsLoadedMs >= 0) {
-      markTiming('recent_sessions_loaded_ms', nowMs() - recentSessionsLoadedMs);
+      markTimingValue('recent_sessions_loaded_ms', recentSessionsLoadedMs);
     }
     return { success: true };
   });
