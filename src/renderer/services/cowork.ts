@@ -64,6 +64,7 @@ class CoworkService {
   private latestLoadSessionsRequestId = 0;
   private latestLoadSessionRequestId = 0;
   private subscribedSessionId: string | null = null;
+  private latestSubscriptionRequestId = 0;
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -271,6 +272,7 @@ class CoworkService {
     const cowork = window.electron?.cowork;
     if (!cowork?.subscribeSession) return;
     if (this.subscribedSessionId === sessionId) return;
+    const requestId = ++this.latestSubscriptionRequestId;
     const previousSessionId = this.subscribedSessionId;
     this.subscribedSessionId = null;
     if (previousSessionId && cowork.unsubscribeSession) {
@@ -282,6 +284,14 @@ class CoworkService {
       console.debug('[CoworkService] failed to subscribe to session stream:', error);
       return null;
     });
+    if (requestId !== this.latestSubscriptionRequestId) {
+      if (result?.success) {
+        await cowork.unsubscribeSession?.(sessionId)?.catch((error) => {
+          console.debug('[CoworkService] failed to unsubscribe from stale session stream:', error);
+        });
+      }
+      return;
+    }
     if (result?.success) {
       this.subscribedSessionId = sessionId;
     }
@@ -289,6 +299,7 @@ class CoworkService {
 
   private async unsubscribeCurrentSession(): Promise<void> {
     const cowork = window.electron?.cowork;
+    this.latestSubscriptionRequestId += 1;
     const sessionId = this.subscribedSessionId;
     if (!sessionId) return;
     this.subscribedSessionId = null;
