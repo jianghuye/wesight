@@ -56,6 +56,14 @@ type RuntimeMetadata = {
   expectedPathHint: string;
 };
 
+const isWindowsCommandShim = (commandPath: string): boolean => {
+  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(commandPath);
+};
+
+const buildWindowsCommandShimArgs = (commandPath: string, args: string[]): string[] => {
+  return ['/d', '/c', `call "${commandPath}" ${args.map((arg) => `"${arg.replace(/"/g, '\\"')}"`).join(' ')}`];
+};
+
 const ensureDir = (dirPath: string): void => {
   fs.mkdirSync(dirPath, { recursive: true });
 };
@@ -443,9 +451,14 @@ export class HermesEngineManager extends EventEmitter {
       }
     }
 
+    const gatewayArgs = ['gateway', 'run', '--replace'];
+    const spawnCommand = isWindowsCommandShim(runtime.commandPath) ? 'cmd.exe' : runtime.commandPath;
+    const spawnArgs = isWindowsCommandShim(runtime.commandPath)
+      ? buildWindowsCommandShimArgs(runtime.commandPath, gatewayArgs)
+      : gatewayArgs;
     const child = spawn(
-      runtime.commandPath,
-      ['gateway'],
+      spawnCommand,
+      spawnArgs,
       {
         cwd: os.homedir(),
         env,
@@ -498,7 +511,10 @@ export class HermesEngineManager extends EventEmitter {
       '/opt/homebrew/bin/hermes',
       '/usr/local/bin/hermes',
       ...(process.platform === 'win32' ? [
+        this.resolveWindowsCommand('hermes'),
         path.join(appData, 'npm', 'hermes.cmd'),
+        path.join(appData, 'npm', 'hermes.exe'),
+        path.join(appData, 'npm', 'hermes.bat'),
         path.join(home, '.local', 'bin', 'hermes.exe'),
         path.join(home, '.hermes', 'bin', 'hermes.exe'),
         path.join(localAppData, 'hermes', 'hermes-agent', 'venv', 'Scripts', 'hermes.exe'),
@@ -532,6 +548,10 @@ export class HermesEngineManager extends EventEmitter {
   }
 
   private resolveCommandFromShell(command: string): string | null {
+    if (process.platform === 'win32') {
+      return this.resolveWindowsCommand(command);
+    }
+
     const shell = process.env.SHELL || '/bin/zsh';
     const result = spawnSync(shell, ['-lc', `command -v ${command}`], {
       encoding: 'utf8',
@@ -545,8 +565,33 @@ export class HermesEngineManager extends EventEmitter {
     return result.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
   }
 
+  private resolveWindowsCommand(command: string): string | null {
+    const result = spawnSync('where.exe', [command], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        PATH: buildHermesSearchPath(),
+      },
+    });
+    if (result.status !== 0) return null;
+
+    const candidates = result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return candidates.find((candidate) => /\.(cmd|exe|bat)$/i.test(candidate))
+      ?? candidates[0]
+      ?? null;
+  }
+
   private readCommandVersion(commandPath: string): string | null {
-    const result = spawnSync(commandPath, ['--version'], {
+    const versionArgs = ['--version'];
+    const spawnCommand = isWindowsCommandShim(commandPath) ? 'cmd.exe' : commandPath;
+    const spawnArgs = isWindowsCommandShim(commandPath)
+      ? buildWindowsCommandShimArgs(commandPath, versionArgs)
+      : versionArgs;
+    const result = spawnSync(spawnCommand, spawnArgs, {
       encoding: 'utf8',
       timeout: 10_000,
       env: {

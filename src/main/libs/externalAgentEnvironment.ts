@@ -378,6 +378,21 @@ const getWindowsSearchPaths = (command: string): string[] => {
   return [];
 };
 
+const preferWindowsExecutable = (candidates: string[]): string | null => {
+  if (candidates.length === 0) return null;
+  return candidates.find((candidate) => /\.(cmd|exe|bat)$/i.test(candidate))
+    ?? candidates[0]
+    ?? null;
+};
+
+const isWindowsCommandShim = (commandPath: string): boolean => {
+  return process.platform === 'win32' && /\.(cmd|bat)$/i.test(commandPath);
+};
+
+const buildWindowsCommandShimArgs = (commandPath: string, args: string[]): string[] => {
+  return ['/d', '/c', `call "${commandPath}" ${args.map((arg) => `"${arg.replace(/"/g, '\\"')}"`).join(' ')}`];
+};
+
 const resolveCommand = (command: string): { found: boolean; path: string | null; error: string | null } => {
   if (process.platform === 'win32') {
     for (const candidate of getWindowsSearchPaths(command)) {
@@ -392,7 +407,10 @@ const resolveCommand = (command: string): { found: boolean; path: string | null;
     shell: false,
   });
   if (result.status === 0) {
-    const commandPath = result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? null;
+    const candidates = result.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const commandPath = process.platform === 'win32'
+      ? preferWindowsExecutable(candidates)
+      : candidates[0] ?? null;
     return { found: Boolean(commandPath), path: commandPath, error: null };
   }
 
@@ -428,7 +446,12 @@ const resolveCommand = (command: string): { found: boolean; path: string | null;
 };
 
 const readCommandVersion = (command: string): string | null => {
-  const result = spawnSync(command, ['--version'], {
+  const versionArgs = ['--version'];
+  const executable = isWindowsCommandShim(command) ? 'cmd.exe' : command;
+  const args = isWindowsCommandShim(command)
+    ? buildWindowsCommandShimArgs(command, versionArgs)
+    : versionArgs;
+  const result = spawnSync(executable, args, {
     encoding: 'utf8',
     shell: false,
     timeout: 10_000,
