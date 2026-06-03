@@ -246,7 +246,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     const appType = getCliAppTypeForEngine(selectedRuntimeEngine);
     if (!appType) return true;
     try {
-      const snapshot = await coworkService.getAgentEngineSnapshot();
+      const snapshot = await coworkService.getAgentEngineSnapshot({ appTypes: [appType] });
       const status = snapshot?.engines.find((item) => item.appType === appType);
       if (status?.found) {
         return true;
