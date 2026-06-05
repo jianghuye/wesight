@@ -27,8 +27,8 @@
   ; Stop-Process -Force is equivalent to taskkill /F — the processes have no
   ; chance to run before-quit cleanup, so file handles may linger briefly as
   ; "ghost handles" in the Windows kernel. We poll until no matching process
-  ; remains, then force-remove the old install directory so that the old
-  ; uninstaller (which may lack our customUnInit fix) is never invoked.
+  ; remains. The install directory is removed later, after assisted installer
+  ; directory selection has finalized $INSTDIR.
 
   nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "\
     Stop-Process -Name WeSight -Force -ErrorAction SilentlyContinue;\
@@ -41,8 +41,25 @@
       Start-Sleep -Milliseconds 500;\
     }"'
   Pop $0
+!macroend
 
-  ; ── Remove old installation directory ──
+!macro customCheckAppRunning
+  ; This macro is invoked from electron-builder's install section after the
+  ; assisted installer directory page has finalized $INSTDIR, but before
+  ; uninstallOldVersion and installApplicationFiles run. Do final process
+  ; cleanup and remove only the selected install directory here.
+  nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "\
+    Stop-Process -Name WeSight -Force -ErrorAction SilentlyContinue;\
+    Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*WeSight*\" } | Stop-Process -Force -ErrorAction SilentlyContinue;\
+    for ($$i = 0; $$i -lt 15; $$i++) {\
+      $$procs = @();\
+      $$procs += Get-Process -Name WeSight -ErrorAction SilentlyContinue;\
+      $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*WeSight*\" };\
+      if ($$procs.Count -eq 0) { break };\
+      Start-Sleep -Milliseconds 500;\
+    }"'
+  Pop $0
+
   ; After all processes are gone, ghost file handles may still linger for a
   ; few seconds. RMDir /r will silently skip locked files but remove the rest
   ; — including the old uninstaller exe. This prevents electron-builder from

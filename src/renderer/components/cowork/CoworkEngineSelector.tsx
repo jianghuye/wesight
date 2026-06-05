@@ -160,9 +160,20 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
 
   const selectedOption = ENGINE_OPTIONS.find((option) => option.engine === effectiveEngine)
     ?? ENGINE_OPTIONS[1];
+  const effectiveAppType = React.useMemo(
+    () => getCliAppTypeForEngine(effectiveEngine),
+    [effectiveEngine],
+  );
 
   const refreshSnapshot = React.useCallback((options: { forceRefresh?: boolean } = {}) => {
-    return coworkService.getAgentEngineSnapshot(options)
+    if (!effectiveAppType) {
+      setSnapshot(null);
+      return Promise.resolve();
+    }
+    return coworkService.getAgentEngineSnapshot({
+      ...options,
+      appTypes: [effectiveAppType],
+    })
       .then((nextSnapshot) => {
         if (mountedRef.current && nextSnapshot) {
           setSnapshot(nextSnapshot);
@@ -173,7 +184,7 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
           setSnapshot(null);
         }
       });
-  }, []);
+  }, [effectiveAppType]);
 
   React.useEffect(() => {
     mountedRef.current = true;
