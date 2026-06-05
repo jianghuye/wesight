@@ -155,57 +155,59 @@ const CoworkEngineSelector: React.FC<CoworkEngineSelectorProps> = ({
   const [switchError, setSwitchError] = React.useState<string | null>(null);
   const [snapshot, setSnapshot] = React.useState<ExternalAgentEnvironmentSnapshot | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const hasRequestedOpenRefreshRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
 
   const selectedOption = ENGINE_OPTIONS.find((option) => option.engine === effectiveEngine)
     ?? ENGINE_OPTIONS[1];
+  const effectiveAppType = React.useMemo(
+    () => getCliAppTypeForEngine(effectiveEngine),
+    [effectiveEngine],
+  );
 
-  React.useEffect(() => {
-    let mounted = true;
-    const appType = getCliAppTypeForEngine(effectiveEngine);
-    if (!appType) {
+  const refreshSnapshot = React.useCallback((options: { forceRefresh?: boolean } = {}) => {
+    if (!effectiveAppType) {
       setSnapshot(null);
-      return () => {
-        mounted = false;
-      };
+      return Promise.resolve();
     }
-    coworkService.getAgentEngineSnapshot({
-      appTypes: [appType],
+    return coworkService.getAgentEngineSnapshot({
+      ...options,
+      appTypes: [effectiveAppType],
     })
       .then((nextSnapshot) => {
-        if (mounted) {
+        if (mountedRef.current && nextSnapshot) {
           setSnapshot(nextSnapshot);
         }
       })
       .catch(() => {
-        if (mounted) {
+        if (mountedRef.current) {
           setSnapshot(null);
         }
       });
-    return () => {
-      mounted = false;
-    };
-  }, [effectiveEngine]);
+  }, [effectiveAppType]);
 
   React.useEffect(() => {
-    if (!isOpen) {
+    mountedRef.current = true;
+    void refreshSnapshot();
+    const unsubscribe = coworkService.onAgentEnginesChanged((nextSnapshot) => {
+      if (mountedRef.current) {
+        setSnapshot(nextSnapshot);
+      }
+    });
+
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+    };
+  }, [refreshSnapshot]);
+
+  React.useEffect(() => {
+    if (!isOpen || readOnly || hasRequestedOpenRefreshRef.current) {
       return;
     }
-    let mounted = true;
-    coworkService.getAgentEngineSnapshot({ forceRefresh: true })
-      .then((nextSnapshot) => {
-        if (mounted) {
-          setSnapshot(nextSnapshot);
-        }
-      })
-      .catch(() => {
-        if (mounted) {
-          setSnapshot(null);
-        }
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [isOpen]);
+    hasRequestedOpenRefreshRef.current = true;
+    void refreshSnapshot({ forceRefresh: true });
+  }, [isOpen, readOnly, refreshSnapshot]);
 
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

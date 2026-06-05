@@ -115,7 +115,7 @@ interface ProviderDefInput {
   /**
    * When set, resolveCodingPlanBaseUrl will use this format (and its URL) regardless
    * of the caller's current apiFormat. Use for providers whose coding plan endpoint
-   * only supports a single protocol (e.g. Zhipu coding plan is openai-only).
+   * only supports a single protocol.
    */
   readonly preferredCodingPlanFormat?: 'openai' | 'anthropic';
   /**
@@ -234,7 +234,6 @@ const PROVIDER_DEFINITIONS = [
       openai: 'https://open.bigmodel.cn/api/coding/paas/v4',
       anthropic: 'https://open.bigmodel.cn/api/anthropic',
     },
-    preferredCodingPlanFormat: 'openai',
     switchableBaseUrls: {
       anthropic: 'https://open.bigmodel.cn/api/anthropic',
       openai: 'https://open.bigmodel.cn/api/paas/v4',

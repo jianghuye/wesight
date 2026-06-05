@@ -5,6 +5,8 @@ const PROXY_ENV_KEYS = [
   'https_proxy',
   'HTTP_PROXY',
   'HTTPS_PROXY',
+  'all_proxy',
+  'ALL_PROXY',
   'no_proxy',
   'NO_PROXY',
 ] as const;
@@ -85,6 +87,8 @@ export function applySystemProxyEnv(proxyUrl: string | null): void {
   setEnvValue('https_proxy', proxyUrl);
   setEnvValue('HTTP_PROXY', proxyUrl);
   setEnvValue('HTTPS_PROXY', proxyUrl);
+  setEnvValue('all_proxy', proxyUrl);
+  setEnvValue('ALL_PROXY', proxyUrl);
 }
 
 export async function resolveSystemProxyUrl(targetUrl: string): Promise<string | null> {

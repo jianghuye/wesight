@@ -86,7 +86,7 @@ node -e 'const [a,b,c]=process.versions.node.split(".").map(Number);const ok=a>2
 # ---------------------------------------------------------------------------
 # Build cache: skip if the runtime was already built for the pinned version.
 # On Windows (Git Bash / MSYS2), paths like $ELECTRON_ROOT are Unix-style
-# (e.g. /d/github/LobsterAI) which Node.js cannot resolve via require().
+# (e.g. /d/github/WeSight) which Node.js cannot resolve via require().
 # Use "node -" with process.argv so MSYS2 auto-converts the paths.
 # ---------------------------------------------------------------------------
 DESIRED_VERSION=""
@@ -138,9 +138,9 @@ fi
 echo "[1/7] Building OpenClaw from source: $OPENCLAW_SRC"
 pushd "$OPENCLAW_SRC" >/dev/null
 corepack enable >/dev/null 2>&1 || true
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm build
-pnpm ui:build
+(cd ui && pnpm run build)
 if ! pnpm release:check; then
   echo "[openclaw-runtime] release:check failed, running pnpm plugins:sync and retrying..."
   echo "[openclaw-runtime] NOTE: plugins:sync may modify files in OPENCLAW_SRC ($OPENCLAW_SRC)."
@@ -149,7 +149,7 @@ if ! pnpm release:check; then
 fi
 
 echo "[2/7] Packing npm tarball"
-npm pack --pack-destination "$PACK_DIR"
+npm pack --pack-destination "$PACK_DIR" --ignore-scripts
 TARBALL="$(ls -1t "$PACK_DIR"/openclaw-*.tgz | head -n 1)"
 if [[ -z "$TARBALL" || ! -f "$TARBALL" ]]; then
   echo "Failed to locate packed tarball in $PACK_DIR" >&2
@@ -220,7 +220,46 @@ echo "[openclaw-runtime] npm target platform=$NPM_TARGET_PLATFORM arch=$NPM_TARG
 NPM_CONFIG_LEGACY_PEER_DEPS=true \
 npm_config_platform="$NPM_TARGET_PLATFORM" \
 npm_config_arch="$NPM_TARGET_ARCH" \
-npm install --omit=dev --no-audit --no-fund
+npm install --omit=dev --no-audit --no-fund --ignore-scripts
+
+if [[ "$TARGET_ID" == "win-x64" ]]; then
+  MATRIX_NODE_FILENAME="matrix-sdk-crypto.win32-x64-msvc.node"
+  DST_NODE_DIR="$OUT_DIR/node_modules/@matrix-org/matrix-sdk-crypto-nodejs"
+  DST_NODE="$DST_NODE_DIR/$MATRIX_NODE_FILENAME"
+  MATRIX_NODE_CANDIDATES=()
+
+  if [[ -n "${MATRIX_SDK_CRYPTO_NODE_PATH:-}" ]]; then
+    if command -v cygpath >/dev/null 2>&1; then
+      MATRIX_NODE_CANDIDATES+=("$(cygpath -u "$MATRIX_SDK_CRYPTO_NODE_PATH" 2>/dev/null || printf '%s' "$MATRIX_SDK_CRYPTO_NODE_PATH")")
+    else
+      MATRIX_NODE_CANDIDATES+=("$MATRIX_SDK_CRYPTO_NODE_PATH")
+    fi
+  fi
+  MATRIX_NODE_CANDIDATES+=(
+    "$ELECTRON_ROOT/vendor/offline/$MATRIX_NODE_FILENAME"
+    "/d/Download/$MATRIX_NODE_FILENAME"
+  )
+
+  SRC_NODE=""
+  for candidate in "${MATRIX_NODE_CANDIDATES[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      SRC_NODE="$candidate"
+      break
+    fi
+  done
+
+  if [[ -n "$SRC_NODE" && -d "$DST_NODE_DIR" ]]; then
+    cp -f "$SRC_NODE" "$DST_NODE"
+    echo "[openclaw-runtime] Injected offline Matrix crypto native module: $DST_NODE"
+    echo "[openclaw-runtime] Matrix crypto native module size=$(stat -c%s "$DST_NODE" 2>/dev/null || wc -c < "$DST_NODE") bytes"
+  fi
+
+  if [[ ! -f "$DST_NODE" ]]; then
+    echo "[openclaw-runtime] Missing Matrix crypto native module for win-x64: $DST_NODE" >&2
+    echo "[openclaw-runtime] Download $MATRIX_NODE_FILENAME and set MATRIX_SDK_CRYPTO_NODE_PATH, or place it under vendor/offline/." >&2
+    exit 1
+  fi
+fi
 
 # Runtime sanity checks before packing gateway.asar
 [[ -f "openclaw.mjs" ]]

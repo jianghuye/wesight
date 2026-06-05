@@ -63,7 +63,7 @@ test('managed session delivery route falls back to last route fields', () => {
 test('route lookup can match DingTalk channel session keys discovered outside the managed session namespace', () => {
   const candidateSessionKeys = [
     ...buildDingTalkSessionKeyCandidates('__default__:2459325231940374'),
-    'agent:main:lobsterai:session-3',
+    'agent:main:wesight:session-3',
   ];
 
   const resolved = resolveOpenClawDeliveryRouteForSessionKeys(candidateSessionKeys, [
@@ -88,7 +88,7 @@ test('route lookup can match DingTalk channel session keys discovered outside th
 });
 
 test('delivery route extraction ignores incomplete session rows and non-dingtalk channels', () => {
-  assert.equal(extractOpenClawDeliveryRoute({ key: 'agent:main:lobsterai:session-3' }), null);
+  assert.equal(extractOpenClawDeliveryRoute({ key: 'agent:main:wesight:session-3' }), null);
   assert.equal(
     buildDingTalkSendParamsFromRoute({
       channel: 'telegram',

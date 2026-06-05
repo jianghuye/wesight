@@ -158,7 +158,8 @@ function syncModelConfig(configPath: string, store: SqliteStore): void {
         supportsImage: Array.isArray(m.input) && m.input.includes('image'),
       }));
 
-      // Resolve apiKey: use plain text value, skip placeholders like ${LOBSTER_...}
+      // Resolve apiKey: use plain text value, skip placeholders like ${WESIGHT_...}
+      // or legacy ${LOBSTER_...}.
       const apiKey = typeof providerConfig.apiKey === 'string' && !providerConfig.apiKey.startsWith('${')
         ? providerConfig.apiKey
         : '';

@@ -944,7 +944,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     coworkConfig.claudeCodePermissionMode ?? ClaudeCodePermissionModeValue.BypassPermissions,
   );
   const [codexConfigSource, setCodexConfigSource] = useState<ExternalAgentConfigSource>(
-    coworkConfig.codexConfigSource ?? ExternalAgentConfigSourceValue.WesightModel,
+    coworkConfig.codexConfigSource ?? ExternalAgentConfigSourceValue.LocalCli,
   );
   const [hermesConfigSource, setHermesConfigSource] = useState<ExternalAgentConfigSource>(
     coworkConfig.hermesConfigSource ?? ExternalAgentConfigSourceValue.WesightModel,
@@ -1002,7 +1002,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setOpenClawConfigSource(coworkConfig.openclawConfigSource ?? ExternalAgentConfigSourceValue.LocalCli);
     setClaudeCodeConfigSource(coworkConfig.claudeCodeConfigSource ?? ExternalAgentConfigSourceValue.WesightModel);
     setClaudeCodePermissionMode(coworkConfig.claudeCodePermissionMode ?? ClaudeCodePermissionModeValue.BypassPermissions);
-    setCodexConfigSource(coworkConfig.codexConfigSource ?? ExternalAgentConfigSourceValue.WesightModel);
+    setCodexConfigSource(coworkConfig.codexConfigSource ?? ExternalAgentConfigSourceValue.LocalCli);
     setHermesConfigSource(coworkConfig.hermesConfigSource ?? ExternalAgentConfigSourceValue.WesightModel);
     setOpenCodeConfigSource(coworkConfig.opencodeConfigSource ?? ExternalAgentConfigSourceValue.WesightModel);
     setOpenCodePermissionMode(coworkConfig.opencodePermissionMode ?? OpenCodePermissionModeValue.Auto);

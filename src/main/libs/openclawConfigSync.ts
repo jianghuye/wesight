@@ -1663,11 +1663,8 @@ export class OpenClawConfigSync {
     } catch {
       // The config may not exist yet during first-run preparation.
     }
-    // Legacy fallback: keep LOBSTER_PROVIDER_API_KEY set to a stable value so stale
-    // openclaw.json files with the old placeholder don't crash the gateway.
-    // Use the active provider's key if available, but ONLY for the first sync —
-    // after that, openclaw.json uses provider-specific placeholders and this var
-    // is never resolved. Use a fixed value to avoid secretEnvVarsChanged on switch.
+    // Legacy provider fallback keeps stale OpenClaw configs from failing
+    // with MissingEnvVarError after the WeSight rename.
     env.LOBSTER_PROVIDER_API_KEY = 'legacy-unused';
 
     // MCP Bridge Secret — always set so stale openclaw.json with

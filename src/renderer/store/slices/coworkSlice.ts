@@ -75,7 +75,7 @@ const initialState: CoworkState = {
     openclawConfigSource: ExternalAgentConfigSource.LocalCli,
     claudeCodeConfigSource: ExternalAgentConfigSource.WesightModel,
     claudeCodePermissionMode: ClaudeCodePermissionMode.BypassPermissions,
-    codexConfigSource: ExternalAgentConfigSource.WesightModel,
+    codexConfigSource: ExternalAgentConfigSource.LocalCli,
     hermesConfigSource: ExternalAgentConfigSource.WesightModel,
     opencodeConfigSource: ExternalAgentConfigSource.WesightModel,
     opencodePermissionMode: OpenCodePermissionMode.Auto,

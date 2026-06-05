@@ -187,22 +187,28 @@ export function resolveUserShellPath(): string | null {
  */
 let cachedWindowsRegistryPath: string | null | undefined;
 
-function readWindowsRegistryPathValue(registryKey: string): string {
+function queryWindowsRegistryValue(registryKey: string, valueName: string, timeout = 8000): string {
   try {
-    const output = execSync(`reg query "${registryKey}" /v Path`, {
+    const result = spawnSync('reg', ['query', registryKey, '/v', valueName], {
       encoding: 'utf-8',
-      timeout: 8000,
+      timeout,
+      stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-
-    for (const line of output.split(/\r?\n/)) {
-      const match = line.match(/^\s*Path\s+REG_\w+\s+(.+)$/i);
-      if (match?.[1]) {
-        return match[1].trim();
-      }
-    }
+    return result.status === 0 && typeof result.stdout === 'string' ? result.stdout : '';
   } catch {
-    // Ignore missing keys or access-denied errors.
+    return '';
+  }
+}
+
+function readWindowsRegistryPathValue(registryKey: string): string {
+  const output = queryWindowsRegistryValue(registryKey, 'Path');
+
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^\s*Path\s+REG_\w+\s+(.+)$/i);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
   }
 
   return '';
@@ -331,17 +337,13 @@ function listGitInstallPathsFromRegistry(): string[] {
   const installRoots: string[] = [];
 
   for (const key of registryKeys) {
-    try {
-      const output = execSync(`reg query "${key}" /v InstallPath`, { encoding: 'utf-8', timeout: 5000 });
-      for (const line of output.split(/\r?\n/)) {
-        const match = line.match(/InstallPath\s+REG_\w+\s+(.+)$/i);
-        const root = normalizeWindowsPath(match?.[1]);
-        if (root) {
-          installRoots.push(root);
-        }
+    const output = queryWindowsRegistryValue(key, 'InstallPath', 5000);
+    for (const line of output.split(/\r?\n/)) {
+      const match = line.match(/InstallPath\s+REG_\w+\s+(.+)$/i);
+      const root = normalizeWindowsPath(match?.[1]);
+      if (root) {
+        installRoots.push(root);
       }
-    } catch {
-      // registry key might not exist
     }
   }
 
@@ -488,11 +490,11 @@ export function ensureElectronNodeShim(electronPath: string, npmBinDir?: string)
     const nodeSh = join(shimDir, 'node');
     const nodeShContent = [
       '#!/usr/bin/env bash',
-      'if [ -z "${LOBSTERAI_ELECTRON_PATH:-}" ]; then',
-      '  echo "LOBSTERAI_ELECTRON_PATH is not set" >&2',
+      'if [ -z "${WESIGHT_ELECTRON_PATH:-}" ]; then',
+      '  echo "WESIGHT_ELECTRON_PATH is not set" >&2',
       '  exit 127',
       'fi',
-      'exec env ELECTRON_RUN_AS_NODE=1 "${LOBSTERAI_ELECTRON_PATH}" "$@"',
+      'exec env ELECTRON_RUN_AS_NODE=1 "${WESIGHT_ELECTRON_PATH}" "$@"',
       '',
     ].join('\n');
 
@@ -509,12 +511,12 @@ export function ensureElectronNodeShim(electronPath: string, npmBinDir?: string)
       const nodeCmd = join(shimDir, 'node.cmd');
       const nodeCmdContent = [
         '@echo off',
-        'if "%LOBSTERAI_ELECTRON_PATH%"=="" (',
-        '  echo LOBSTERAI_ELECTRON_PATH is not set 1>&2',
+        'if "%WESIGHT_ELECTRON_PATH%"=="" (',
+        '  echo WESIGHT_ELECTRON_PATH is not set 1>&2',
         '  exit /b 127',
         ')',
         'set ELECTRON_RUN_AS_NODE=1',
-        '"%LOBSTERAI_ELECTRON_PATH%" %*',
+        '"%WESIGHT_ELECTRON_PATH%" %*',
         '',
       ].join('\r\n');
       writeFileSync(nodeCmd, nodeCmdContent, 'utf8');
@@ -548,17 +550,17 @@ export function ensureElectronNodeShim(electronPath: string, npmBinDir?: string)
         try { chmodSync(npxSh, 0o755); } catch { /* ignore */ }
         coworkLog('INFO', 'resolveNodeShim', `Created npx bash shim: ${npxSh} -> ${npxCliJsPosix}`);
 
-        // npx.cmd for Windows — uses %LOBSTERAI_NPM_BIN_DIR% env var to avoid
+        // npx.cmd for Windows — uses %WESIGHT_NPM_BIN_DIR% env var to avoid
         // hardcoding paths that may contain non-ASCII chars (breaks GBK cmd.exe).
         if (process.platform === 'win32') {
           const npxCmd = join(shimDir, 'npx.cmd');
           const npxCmdContent = [
             '@echo off',
-            '"%~dp0node.cmd" "%LOBSTERAI_NPM_BIN_DIR%\\npx-cli.js" %*',
+            '"%~dp0node.cmd" "%WESIGHT_NPM_BIN_DIR%\\npx-cli.js" %*',
             '',
           ].join('\r\n');
           writeFileSync(npxCmd, npxCmdContent, 'utf8');
-          coworkLog('INFO', 'resolveNodeShim', `Created npx.cmd shim: ${npxCmd} (using env var LOBSTERAI_NPM_BIN_DIR)`);
+          coworkLog('INFO', 'resolveNodeShim', `Created npx.cmd shim: ${npxCmd} (using env var WESIGHT_NPM_BIN_DIR)`);
         }
       } else {
         coworkLog('WARN', 'resolveNodeShim', `npx-cli.js not found at: ${npxCliJs}`);
@@ -577,17 +579,17 @@ export function ensureElectronNodeShim(electronPath: string, npmBinDir?: string)
         try { chmodSync(npmSh, 0o755); } catch { /* ignore */ }
         coworkLog('INFO', 'resolveNodeShim', `Created npm bash shim: ${npmSh} -> ${npmCliJsPosix}`);
 
-        // npm.cmd for Windows — uses %LOBSTERAI_NPM_BIN_DIR% env var to avoid
+        // npm.cmd for Windows — uses %WESIGHT_NPM_BIN_DIR% env var to avoid
         // hardcoding paths that may contain non-ASCII chars (breaks GBK cmd.exe).
         if (process.platform === 'win32') {
           const npmCmd = join(shimDir, 'npm.cmd');
           const npmCmdContent = [
             '@echo off',
-            '"%~dp0node.cmd" "%LOBSTERAI_NPM_BIN_DIR%\\npm-cli.js" %*',
+            '"%~dp0node.cmd" "%WESIGHT_NPM_BIN_DIR%\\npm-cli.js" %*',
             '',
           ].join('\r\n');
           writeFileSync(npmCmd, npmCmdContent, 'utf8');
-          coworkLog('INFO', 'resolveNodeShim', `Created npm.cmd shim: ${npmCmd} (using env var LOBSTERAI_NPM_BIN_DIR)`);
+          coworkLog('INFO', 'resolveNodeShim', `Created npm.cmd shim: ${npmCmd} (using env var WESIGHT_NPM_BIN_DIR)`);
         }
       } else {
         coworkLog('WARN', 'resolveNodeShim', `npm-cli.js not found at: ${npmCliJs}`);
@@ -991,13 +993,13 @@ function ensureWindowsBashUtf8InitScript(): string | null {
 function applyPackagedEnvOverrides(env: Record<string, string | undefined>): void {
   const electronNodeRuntimePath = getElectronNodeRuntimePath();
 
-  if (app.isPackaged && !env.LOBSTERAI_ELECTRON_PATH) {
-    env.LOBSTERAI_ELECTRON_PATH = electronNodeRuntimePath;
+  if (app.isPackaged && !env.WESIGHT_ELECTRON_PATH) {
+    env.WESIGHT_ELECTRON_PATH = electronNodeRuntimePath;
   }
 
   // On Windows, resolve git-bash and ensure Git toolchain directories are available in PATH.
   if (process.platform === 'win32') {
-    env.LOBSTERAI_ELECTRON_PATH = electronNodeRuntimePath;
+    env.WESIGHT_ELECTRON_PATH = electronNodeRuntimePath;
 
     // Force UTF-8 encoding for MSYS2/git-bash.
     //
@@ -1086,7 +1088,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
           const diagnostic = truncateDiagnostic(
             `Configured bash is unhealthy (${configuredBashPath}): ${configuredHealth.reason || 'unknown reason'}`
           );
-          env.LOBSTERAI_GIT_BASH_RESOLUTION_ERROR = diagnostic;
+          env.WESIGHT_GIT_BASH_RESOLUTION_ERROR = diagnostic;
           coworkLog('WARN', 'resolveGitBash', diagnostic);
           bashPath = null;
         }
@@ -1095,7 +1097,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
 
     if (bashPath) {
       env.CLAUDE_CODE_GIT_BASH_PATH = bashPath;
-      delete env.LOBSTERAI_GIT_BASH_RESOLUTION_ERROR;
+      delete env.WESIGHT_GIT_BASH_RESOLUTION_ERROR;
       coworkLog('INFO', 'resolveGitBash', `Using Windows git-bash: ${bashPath}`);
       const gitToolDirs = getWindowsGitToolDirs(bashPath);
       env.PATH = appendEnvPath(env.PATH, gitToolDirs);
@@ -1103,7 +1105,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
       ensureWindowsBashBootstrapPath(env);
     } else {
       const diagnostic = cachedGitBashResolutionError || 'git-bash not found or failed health checks';
-      env.LOBSTERAI_GIT_BASH_RESOLUTION_ERROR = truncateDiagnostic(diagnostic);
+      env.WESIGHT_GIT_BASH_RESOLUTION_ERROR = truncateDiagnostic(diagnostic);
     }
 
     appendPythonRuntimeToEnv(env);
@@ -1188,7 +1190,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
 
   // Set env var so .cmd shims can reference npmBinDir without hardcoding
   // non-ASCII characters (which break on Windows when cmd.exe uses GBK code page).
-  env.LOBSTERAI_NPM_BIN_DIR = npmBinDir;
+  env.WESIGHT_NPM_BIN_DIR = npmBinDir;
 
   const hasSystemNode = hasCommandInEnv('node', env);
   const hasSystemNpx = hasCommandInEnv('npx', env);
@@ -1201,7 +1203,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
     const shimDir = ensureElectronNodeShim(electronNodeRuntimePath, npmBinDir);
     if (shimDir) {
       env.PATH = [shimDir, env.PATH].filter(Boolean).join(delimiter);
-      env.LOBSTERAI_NODE_SHIM_ACTIVE = '1';
+      env.WESIGHT_NODE_SHIM_ACTIVE = '1';
       coworkLog('INFO', 'resolveNodeShim', `Injected Electron Node/npx/npm shim PATH entry: ${shimDir}`);
       if (shouldForcePackagedDarwinShim) {
         coworkLog('INFO', 'resolveNodeShim', 'Packaged macOS build: forcing bundled Electron node/npx/npm shims to avoid stale system Node versions');
@@ -1214,7 +1216,7 @@ function applyPackagedEnvOverrides(env: Record<string, string | undefined>): voi
       }
     }
   } else {
-    delete env.LOBSTERAI_NODE_SHIM_ACTIVE;
+    delete env.WESIGHT_NODE_SHIM_ACTIVE;
     coworkLog('INFO', 'resolveNodeShim', 'System node/npx/npm detected; skipped Electron node shim injection');
   }
 
@@ -1274,7 +1276,7 @@ function verifyNodeEnvironment(env: Record<string, string | undefined>): void {
           try {
             let execTarget = resolvedForExec;
             if (process.platform === 'win32' && /\.cmd$/i.test(resolvedForExec)) {
-              execTarget = env.LOBSTERAI_ELECTRON_PATH || process.execPath;
+              execTarget = env.WESIGHT_ELECTRON_PATH || process.execPath;
             }
             const versionResult = spawnSync(execTarget, ['--version'], {
               env: { ...env, ELECTRON_RUN_AS_NODE: '1' } as NodeJS.ProcessEnv,
@@ -1303,8 +1305,8 @@ function verifyNodeEnvironment(env: Record<string, string | undefined>): void {
 
   // Log key env vars
   coworkLog('INFO', tag, `NODE_PATH=${env.NODE_PATH || '(not set)'}`);
-  coworkLog('INFO', tag, `LOBSTERAI_ELECTRON_PATH=${env.LOBSTERAI_ELECTRON_PATH || '(not set)'}`);
-  coworkLog('INFO', tag, `LOBSTERAI_NPM_BIN_DIR=${env.LOBSTERAI_NPM_BIN_DIR || '(not set)'}`);
+  coworkLog('INFO', tag, `WESIGHT_ELECTRON_PATH=${env.WESIGHT_ELECTRON_PATH || '(not set)'}`);
+  coworkLog('INFO', tag, `WESIGHT_NPM_BIN_DIR=${env.WESIGHT_NPM_BIN_DIR || '(not set)'}`);
   coworkLog('INFO', tag, `HOME=${env.HOME || '(not set)'}`);
 }
 
@@ -1319,7 +1321,7 @@ export function getSkillsRoot(): string {
 
   // In development, __dirname can vary with bundling output (e.g. dist-electron/ or dist-electron/libs/).
   // Resolve from several stable anchors and pick the first existing SKILLs directory.
-  const envRoots = [process.env.LOBSTERAI_SKILLS_ROOT, process.env.SKILLS_ROOT]
+  const envRoots = [process.env.WESIGHT_SKILLS_ROOT, process.env.SKILLS_ROOT]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
   const candidates = [
@@ -1347,6 +1349,7 @@ export function getSkillsRoot(): string {
 type EnhancedEnvOptions = {
   injectCoworkModelConfig?: boolean;
   apiConfigOverride?: ApiConfigOverride;
+  proxyProbeUrl?: string;
 };
 
 const COWORK_MODEL_ENV_KEYS = [
@@ -1392,15 +1395,15 @@ export async function getEnhancedEnv(
   // backslashes as escape characters).
   const skillsRoot = getSkillsRoot().replace(/\\/g, '/');
   env.SKILLS_ROOT = skillsRoot;
-  env.LOBSTERAI_SKILLS_ROOT = skillsRoot; // Alternative name for clarity
-  if (process.platform === 'win32' || env.LOBSTERAI_NODE_SHIM_ACTIVE === '1') {
-    env.LOBSTERAI_ELECTRON_PATH = getElectronNodeRuntimePath().replace(/\\/g, '/');
+  env.WESIGHT_SKILLS_ROOT = skillsRoot; // Alternative name for clarity
+  if (process.platform === 'win32' || env.WESIGHT_NODE_SHIM_ACTIVE === '1') {
+    env.WESIGHT_ELECTRON_PATH = getElectronNodeRuntimePath().replace(/\\/g, '/');
   } else {
-    delete env.LOBSTERAI_ELECTRON_PATH;
+    delete env.WESIGHT_ELECTRON_PATH;
   }
 
   // Skip system proxy resolution if proxy env vars already exist
-  if (env.http_proxy || env.HTTP_PROXY || env.https_proxy || env.HTTPS_PROXY) {
+  if (env.http_proxy || env.HTTP_PROXY || env.https_proxy || env.HTTPS_PROXY || env.all_proxy || env.ALL_PROXY) {
     return env;
   }
 
@@ -1410,12 +1413,14 @@ export async function getEnhancedEnv(
   }
 
   // Resolve proxy from system settings
-  const proxyUrl = await resolveSystemProxyUrl('https://openrouter.ai');
+  const proxyUrl = await resolveSystemProxyUrl(options.proxyProbeUrl || 'https://openrouter.ai');
   if (proxyUrl) {
     env.http_proxy = proxyUrl;
     env.https_proxy = proxyUrl;
     env.HTTP_PROXY = proxyUrl;
     env.HTTPS_PROXY = proxyUrl;
+    env.all_proxy = proxyUrl;
+    env.ALL_PROXY = proxyUrl;
     console.log('Injected system proxy for subprocess:', proxyUrl);
   }
 

@@ -20,6 +20,7 @@ vi.mock('electron', () => ({
 // ---------------------------------------------------------------------------
 import BetterSqlite3 from 'better-sqlite3';
 
+import { ExternalAgentConfigSource } from '../shared/cowork/constants';
 import { CoworkStore } from './coworkStore';
 
 // ---------------------------------------------------------------------------
@@ -77,6 +78,24 @@ function setupDb(): void {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS cowork_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_event_id TEXT,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cowork_events_source_event
+    ON cowork_events(source, source_event_id)
+    WHERE source_event_id IS NOT NULL;
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS cowork_user_memories (
       id TEXT PRIMARY KEY,
       text TEXT NOT NULL,
@@ -123,6 +142,10 @@ function insertMessage(
 
 beforeEach(() => {
   setupDb();
+});
+
+test('defaults Codex CLI to local config source', () => {
+  expect(store.getConfig().codexConfigSource).toBe(ExternalAgentConfigSource.LocalCli);
 });
 
 test('getSession returns all messages when one has corrupt metadata', () => {

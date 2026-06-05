@@ -35,7 +35,7 @@ test('parseManagedSessionKey handles raw local session keys', () => {
     agentId: null,
     sessionId: 'abc-123',
   });
-  assert.deepEqual(parseManagedSessionKey('lobsterai:abc-123'), {
+  assert.deepEqual(parseManagedSessionKey('wesight:abc-123'), {
     agentId: null,
     sessionId: 'abc-123',
   });
@@ -63,7 +63,6 @@ test('buildManagedSessionKey emits canonical local session keys', () => {
 test('parseChannelSessionKey ignores managed local session keys', () => {
   assert.equal(parseChannelSessionKey('wesight:abc-123'), null);
   assert.equal(parseChannelSessionKey('agent:main:wesight:abc-123'), null);
-  assert.equal(parseChannelSessionKey('lobsterai:abc-123'), null);
   assert.equal(parseChannelSessionKey('agent:main:lobsterai:abc-123'), null);
 });
 
@@ -71,9 +70,13 @@ test('channel sync does not treat managed local session keys as channel sessions
   const sync = createSync();
 
   assert.equal(isManagedSessionKey('agent:main:wesight:abc-123'), true);
+  assert.equal(isManagedSessionKey('agent:main:lobsterai:abc-123'), true);
   assert.equal(sync.isChannelSessionKey('agent:main:wesight:abc-123'), false);
+  assert.equal(sync.isChannelSessionKey('agent:main:lobsterai:abc-123'), false);
   assert.equal(sync.resolveOrCreateSession('agent:main:wesight:abc-123'), null);
+  assert.equal(sync.resolveOrCreateSession('agent:main:lobsterai:abc-123'), null);
   assert.equal(sync.resolveOrCreateMainAgentSession('agent:main:wesight:abc-123'), null);
+  assert.equal(sync.resolveOrCreateMainAgentSession('agent:main:lobsterai:abc-123'), null);
 });
 
 test('channel sync still recognizes real channel session keys', () => {

@@ -549,6 +549,7 @@ const runCommand = (
       env: options.env,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: process.platform === 'win32',
       windowsVerbatimArguments: options.windowsVerbatimArguments,
     });
     const timeoutMs = options.timeoutMs ?? DEFAULT_CLI_PROBE_TIMEOUT_MS;

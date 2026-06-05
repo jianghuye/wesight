@@ -33,6 +33,12 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+function consoleTimestamp(): string {
+  const now = new Date();
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0');
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
+}
+
 function logDir(): string {
   return _logDir ?? path.dirname(log.transports.file.getFile().path);
 }
@@ -86,7 +92,7 @@ export function initLogger(): void {
   const writeOriginalConsole = (writer: ConsoleWriter, args: unknown[]) => {
     if (!consoleMirrorEnabled) return;
     try {
-      writer.apply(console, args);
+      writer.apply(console, [`[${consoleTimestamp()}]`, ...args]);
     } catch (error) {
       consoleMirrorEnabled = false;
       if (isBrokenPipeError(error)) {

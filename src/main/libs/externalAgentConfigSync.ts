@@ -112,13 +112,14 @@ const DEFAULT_OPENCODE_LOCAL_MODEL = DEFAULT_OPENCODE_MODEL;
 const DEFAULT_GROK_LOCAL_MODEL = DEFAULT_GROK_BUILD_MODEL;
 const DEFAULT_QWEN_CODE_LOCAL_MODEL = DEFAULT_QWEN_CODE_MODEL;
 const DEFAULT_DEEPSEEK_TUI_LOCAL_MODEL = DEFAULT_DEEPSEEK_TUI_MODEL;
+const CODEX_LOCAL_PROVIDER_KEY = 'local_codex';
 const CC_SWITCH_CLAUDE_COMMON_CONFIG_KEY = 'common_config_claude';
 const WESIGHT_MANAGED_META_KEY = '__wesight_managed';
-const WESIGHT_ACTIVE_API_KEY_ENV = 'WESIGHT_APIKEY_ACTIVE_PROVIDER';
-const WESIGHT_ACTIVE_API_KEY_PLACEHOLDER = `\${${WESIGHT_ACTIVE_API_KEY_ENV}}`;
-const CLAUDE_MODEL_ENV_KEYS = [
+const CLAUDE_CREDENTIAL_ENV_KEYS = [
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_API_KEY',
+] as const;
+const CLAUDE_MODEL_ENV_KEYS = [
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_MODEL',
   'ANTHROPIC_REASONING_MODEL',
@@ -126,6 +127,10 @@ const CLAUDE_MODEL_ENV_KEYS = [
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
+] as const;
+const CLAUDE_MANAGED_ENV_KEYS = [
+  ...CLAUDE_CREDENTIAL_ENV_KEYS,
+  ...CLAUDE_MODEL_ENV_KEYS,
 ] as const;
 
 const homeDir = (): string => os.homedir();
@@ -267,6 +272,17 @@ const upsertTomlTopLevelString = (head: string, key: string, value: string): str
   return trimmed ? `${trimmed}\n${line}\n` : `${line}\n`;
 };
 
+const removeTomlTopLevelKeys = (head: string, keys: readonly string[]): string => {
+  const managedKeys = new Set(keys);
+  return head
+    .split(/\r?\n/)
+    .filter((line) => {
+      const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+      return !match || !managedKeys.has(match[1]);
+    })
+    .join('\n');
+};
+
 const upsertTomlTopLevelBoolean = (head: string, key: string, value: boolean): string => {
   const line = `${key} = ${value ? 'true' : 'false'}`;
   const pattern = new RegExp(`^\\s*${key}\\s*=.*$`, 'm');
@@ -277,13 +293,26 @@ const upsertTomlTopLevelBoolean = (head: string, key: string, value: boolean): s
   return trimmed ? `${trimmed}\n${line}\n` : `${line}\n`;
 };
 
+const removeCodexProviderTables = (tables: string, providerKey: string): string => {
+  const escaped = providerKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tablePattern = new RegExp(
+    `(^|\\n)\\[model_providers\\.${escaped}\\][\\s\\S]*?(?=\\n\\[|$)`,
+    'g',
+  );
+  return tables.replace(tablePattern, '$1');
+};
+
+const hasCodexProviderTable = (configText: string, providerKey: string): boolean => {
+  const escaped = providerKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|\\n)\\[model_providers\\.${escaped}\\](?=\\s|\\n|$)`).test(configText);
+};
+
 const replaceCodexProviderTable = (
   tables: string,
   providerKey: string,
   providerName: string,
   baseUrl: string,
 ): string => {
-  const escaped = providerKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const providerBlock = [
     `[model_providers.${providerKey}]`,
     `name = ${tomlString(providerName || providerKey)}`,
@@ -292,14 +321,7 @@ const replaceCodexProviderTable = (
     'requires_openai_auth = true',
     '',
   ].filter((line) => line !== '').join('\n');
-  const tablePattern = new RegExp(
-    `(^|\\n)\\[model_providers\\.${escaped}\\][\\s\\S]*?(?=\\n\\[|$)`,
-    'm',
-  );
-  if (tablePattern.test(tables)) {
-    return tables.replace(tablePattern, (match, prefix) => `${prefix}${providerBlock}`);
-  }
-  const trimmed = removeTrailingBlankLines(tables);
+  const trimmed = removeTrailingBlankLines(removeCodexProviderTables(tables, providerKey).replace(/^\s+/, ''));
   return trimmed ? `${trimmed}\n\n${providerBlock}\n` : `${providerBlock}\n`;
 };
 
@@ -311,13 +333,33 @@ export const mergeCodexConfigForWesightModel = (
 ): string => {
   const providerKey = sanitizeProviderKey(providerName);
   const split = splitTomlHeadAndTables(existingText);
-  let head = split.head;
+  let head = removeTomlTopLevelKeys(split.head, [
+    'model_provider',
+    'model',
+    'model_reasoning_effort',
+    'disable_response_storage',
+  ]);
   head = upsertTomlTopLevelString(head, 'model_provider', providerKey);
   head = upsertTomlTopLevelString(head, 'model', model || DEFAULT_CODEX_MODEL);
   head = upsertTomlTopLevelString(head, 'model_reasoning_effort', 'high');
   head = upsertTomlTopLevelBoolean(head, 'disable_response_storage', true);
   const tables = replaceCodexProviderTable(split.tables, providerKey, providerName, baseUrl);
   return `${removeTrailingBlankLines(head)}\n\n${removeTrailingBlankLines(tables)}\n`;
+};
+
+export const mergeCodexConfigForLocalCli = (existingText: string): string => {
+  if (!hasCodexProviderTable(existingText, CODEX_LOCAL_PROVIDER_KEY)) {
+    return existingText;
+  }
+
+  const split = splitTomlHeadAndTables(existingText);
+  const currentProvider = extractTomlString(split.head, 'model_provider');
+  if (currentProvider === CODEX_LOCAL_PROVIDER_KEY) {
+    return existingText;
+  }
+
+  const head = upsertTomlTopLevelString(split.head, 'model_provider', CODEX_LOCAL_PROVIDER_KEY);
+  return `${removeTrailingBlankLines(head)}\n\n${removeTrailingBlankLines(split.tables)}\n`;
 };
 
 const extractTomlString = (configText: string, key: string): string => {
@@ -402,26 +444,16 @@ const buildClaudeEnvForConfig = (
   existingEnv: Record<string, unknown>,
   config: CoworkApiConfig,
 ): Record<string, unknown> => {
-  const existingAuthToken = getString(existingEnv.ANTHROPIC_AUTH_TOKEN);
-  const existingApiKey = getString(existingEnv.ANTHROPIC_API_KEY);
-  const hasUserCredential = Boolean(
-    existingAuthToken
-    || existingApiKey,
-  );
-  const credentialMatchesWesightConfig = Boolean(
-    config.apiKey
-    && (existingAuthToken === config.apiKey || existingApiKey === config.apiKey),
-  );
-  const shouldWriteCredential = !hasUserCredential
-    || credentialMatchesWesightConfig
-    || isWesightPlaceholder(existingEnv.ANTHROPIC_AUTH_TOKEN)
-    || isWesightPlaceholder(existingEnv.ANTHROPIC_API_KEY);
+  const env = { ...existingEnv };
+  for (const key of CLAUDE_CREDENTIAL_ENV_KEYS) {
+    if (isWesightPlaceholder(env[key])) {
+      delete env[key];
+    }
+  }
   return {
-    ...existingEnv,
-    ...(shouldWriteCredential ? {
-      ANTHROPIC_AUTH_TOKEN: WESIGHT_ACTIVE_API_KEY_PLACEHOLDER,
-      ANTHROPIC_API_KEY: WESIGHT_ACTIVE_API_KEY_PLACEHOLDER,
-    } : {}),
+    ...env,
+    ANTHROPIC_AUTH_TOKEN: config.apiKey,
+    ANTHROPIC_API_KEY: config.apiKey,
     ANTHROPIC_BASE_URL: config.baseURL,
     ANTHROPIC_MODEL: config.model,
     ANTHROPIC_REASONING_MODEL: config.model,
@@ -465,7 +497,7 @@ export const mergeClaudeSettingsForWesightModel = (
     : [];
   const existingEnv = { ...getNestedRecord(existingSettings, 'env') };
   for (const key of previousEnvKeys) {
-    if (isWesightPlaceholder(existingEnv[key])) {
+    if ((CLAUDE_MANAGED_ENV_KEYS as readonly string[]).includes(key) || isWesightPlaceholder(existingEnv[key])) {
       delete existingEnv[key];
     }
   }
@@ -476,8 +508,7 @@ export const mergeClaudeSettingsForWesightModel = (
     [WESIGHT_MANAGED_META_KEY]: {
       ...existingManaged,
       claudeCode: {
-        envKeys: CLAUDE_MODEL_ENV_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(env, key)),
-        secretEnv: WESIGHT_ACTIVE_API_KEY_ENV,
+        envKeys: CLAUDE_MANAGED_ENV_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(env, key)),
       },
     },
   };
@@ -790,6 +821,19 @@ const syncCodexFromWesightModel = (): void => {
   );
 };
 
+const syncCodexFromLocalCliConfig = (): void => {
+  const paths = getCliConfigPaths('codex');
+  if (!fs.existsSync(paths.primaryConfigPath)) {
+    return;
+  }
+
+  const existingConfigText = fs.readFileSync(paths.primaryConfigPath, 'utf8');
+  const nextConfigText = mergeCodexConfigForLocalCli(existingConfigText);
+  if (nextConfigText !== existingConfigText) {
+    atomicWrite(paths.primaryConfigPath, nextConfigText);
+  }
+};
+
 export const syncOpenCodeGlobalConfigFromWesightModel = (): void => {
   const resolved = resolveRawApiConfig();
   const config = requireApiConfig(resolved);
@@ -832,6 +876,9 @@ export const applyExternalAgentConfigForEngine = (
   source: ExternalAgentConfigSourceType,
 ): void => {
   if (source === ExternalAgentConfigSource.LocalCli) {
+    if (engine === CoworkAgentEngine.Codex) {
+      syncCodexFromLocalCliConfig();
+    }
     return;
   }
   if (engine === CoworkAgentEngine.ClaudeCode) {

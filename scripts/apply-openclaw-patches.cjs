@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Apply version-specific LobsterAI patches to the openclaw source tree.
+ * Apply version-specific WeSight patches to the openclaw source tree.
  *
  * Patches are organised in scripts/patches/<version>/ directories, where
  * <version> matches the "openclaw.version" field in package.json (e.g.
@@ -11,7 +11,7 @@
  *   node scripts/apply-openclaw-patches.cjs [openclaw-src-dir]
  *
  * If openclaw-src-dir is not specified, defaults to ../openclaw relative to
- * the LobsterAI project root.
+ * the WeSight project root.
  *
  * Safe to run multiple times — already-applied patches are skipped.
  */

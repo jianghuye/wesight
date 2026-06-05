@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 
-import { CoworkAgentEngine, DefaultCoworkAgentEngine } from '../shared/cowork/constants';
+import { CoworkAgentEngine, DefaultCoworkAgentEngine, ExternalAgentConfigSource } from '../shared/cowork/constants';
 import { DB_FILENAME } from './appConstants';
 import { ensureCoworkEventSchema } from './coworkEventStore';
 
@@ -16,6 +16,7 @@ type ChangePayload<T = unknown> = {
 };
 
 const USER_MEMORIES_MIGRATION_KEY = 'userMemories.migration.v1.completed';
+const CODEX_CONFIG_SOURCE_DEFAULT_MIGRATION_KEY = 'cowork.codexConfigSource.defaultLocalCli.v1.completed';
 const DEFAULT_AGENT_DB_NAME = 'Default Agent';
 const DEFAULT_AGENT_ENGINE = DefaultCoworkAgentEngine;
 
@@ -451,6 +452,7 @@ export class SqliteStore {
       console.warn('Failed to migrate cowork execution mode:', error);
     }
 
+    this.migrateCodexConfigSourceDefault();
     this.migrateLegacyMemoryFileToUserMemories();
     this.migrateFromElectronStore(basePath);
   }
@@ -559,6 +561,28 @@ export class SqliteStore {
       .replace(/\s+/g, ' ')
       .trim();
     return crypto.createHash('sha1').update(normalized).digest('hex');
+  }
+
+  private migrateCodexConfigSourceDefault(): void {
+    if (this.get<string>(CODEX_CONFIG_SOURCE_DEFAULT_MIGRATION_KEY) === '1') {
+      return;
+    }
+
+    try {
+      const now = Date.now();
+      this.db
+        .prepare(`
+          UPDATE cowork_config
+          SET value = ?, updated_at = ?
+          WHERE key = 'codexConfigSource' AND value = ?
+        `)
+        .run(ExternalAgentConfigSource.LocalCli, now, ExternalAgentConfigSource.WesightModel);
+      this.db
+        .prepare('INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, ?)')
+        .run(CODEX_CONFIG_SOURCE_DEFAULT_MIGRATION_KEY, JSON.stringify('1'), now);
+    } catch (error) {
+      console.warn('Failed to migrate Codex config source default:', error);
+    }
   }
 
   private migrateLegacyMemoryFileToUserMemories(): void {

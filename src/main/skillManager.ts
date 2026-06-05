@@ -179,7 +179,7 @@ function buildSkillEnv(): Record<string, string | undefined> {
 
   // Expose Electron executable so skill scripts can run JS with ELECTRON_RUN_AS_NODE
   // even when system Node.js is not installed.
-  env.LOBSTERAI_ELECTRON_PATH = getElectronNodeRuntimePath();
+  env.WESIGHT_ELECTRON_PATH = getElectronNodeRuntimePath();
   appendPythonRuntimeToEnv(env);
 
   // Re-normalize after appendPythonRuntimeToEnv may have added a PATH key
@@ -255,7 +255,10 @@ const parseFrontmatter = (raw: string): { frontmatter: Record<string, unknown>; 
       frontmatter = parsed as Record<string, unknown>;
     }
   } catch (e) {
-    console.warn('[skills] Failed to parse YAML frontmatter:', e);
+    // js-yaml's YAMLException carries the full frontmatter in mark.buffer; logging the
+    // whole Error object would dump the entire SKILL.md on every failure. Print only
+    // the message (reason + bounded snippet), which is small and free of the buffer.
+    console.warn('[skills] Failed to parse YAML frontmatter:', extractErrorMessage(e));
   }
 
   const content = normalized.slice(match[0].length);

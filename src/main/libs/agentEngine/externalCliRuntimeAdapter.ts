@@ -1,5 +1,5 @@
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { type ChildProcessWithoutNullStreams, spawn } from 'child_process';
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -23,9 +23,10 @@ import type {
 } from '../../coworkStore';
 import { t } from '../../i18n';
 import { type ApiConfigOverride,resolveRawApiConfig } from '../claudeSettings';
-import { getEnhancedEnvWithTmpdir } from '../coworkUtil';
+import { getElectronNodeRuntimePath, getEnhancedEnvWithTmpdir } from '../coworkUtil';
 import {
   applyLocalClaudeCodeEnvForPrintMode,
+  buildClaudeCodeConfigDiagnostics,
   type LocalClaudeCodeEnvLoadResult,
 } from '../externalAgentLocalEnv';
 import type {
@@ -51,7 +52,71 @@ const STDERR_TAIL_MAX_CHARS = 24_000;
 const CLI_STARTUP_TIMEOUT_MS = 30_000;
 const CLAUDE_NO_CONTENT_NOTICE_MS = 8_000;
 const CLAUDE_NO_CONTENT_TIMEOUT_MS = 120_000;
+const CODEX_NO_JSON_NOTICE_MS = 12_000;
 const CONTENT_TRUNCATED_HINT = '\n...[truncated to prevent memory pressure]';
+const WINDOWS_HIDE_INIT_SCRIPT_NAME = 'external_cli_windows_hide_init.cjs';
+const WINDOWS_HIDE_INIT_SCRIPT_CONTENT = [
+  '\'use strict\';',
+  '',
+  'if (process.platform === \'win32\') {',
+  '  const childProcess = require(\'child_process\');',
+  '',
+  '  const addWindowsHide = (options) => {',
+  '    if (options == null) return { windowsHide: true };',
+  '    if (typeof options !== \'object\') return options;',
+  '    if (Object.prototype.hasOwnProperty.call(options, \'windowsHide\')) return options;',
+  '    return { ...options, windowsHide: true };',
+  '  };',
+  '',
+  '  const patch = (name, buildWrapper) => {',
+  '    const original = childProcess[name];',
+  '    if (typeof original !== \'function\') return;',
+  '    childProcess[name] = buildWrapper(original);',
+  '  };',
+  '',
+  '  patch(\'spawn\', (original) => function patchedSpawn(command, args, options) {',
+  '    if (Array.isArray(args) || args === undefined) {',
+  '      return original.call(this, command, args, addWindowsHide(options));',
+  '    }',
+  '    return original.call(this, command, addWindowsHide(args));',
+  '  });',
+  '',
+  '  patch(\'spawnSync\', (original) => function patchedSpawnSync(command, args, options) {',
+  '    if (Array.isArray(args) || args === undefined) {',
+  '      return original.call(this, command, args, addWindowsHide(options));',
+  '    }',
+  '    return original.call(this, command, addWindowsHide(args));',
+  '  });',
+  '',
+  '  patch(\'fork\', (original) => function patchedFork(modulePath, args, options) {',
+  '    if (Array.isArray(args) || args === undefined) {',
+  '      return original.call(this, modulePath, args, addWindowsHide(options));',
+  '    }',
+  '    return original.call(this, modulePath, addWindowsHide(args));',
+  '  });',
+  '',
+  '  patch(\'exec\', (original) => function patchedExec(command, options, callback) {',
+  '    if (typeof options === \'function\' || options === undefined) {',
+  '      return original.call(this, command, addWindowsHide(undefined), options);',
+  '    }',
+  '    return original.call(this, command, addWindowsHide(options), callback);',
+  '  });',
+  '',
+  '  patch(\'execFile\', (original) => function patchedExecFile(file, args, options, callback) {',
+  '    if (Array.isArray(args) || args === undefined) {',
+  '      if (typeof options === \'function\' || options === undefined) {',
+  '        return original.call(this, file, args, addWindowsHide(undefined), options);',
+  '      }',
+  '      return original.call(this, file, args, addWindowsHide(options), callback);',
+  '    }',
+  '    if (typeof args === \'function\' || args === undefined) {',
+  '      return original.call(this, file, addWindowsHide(undefined), args);',
+  '    }',
+  '    return original.call(this, file, addWindowsHide(args), options);',
+  '  });',
+  '}',
+  '',
+].join('\n');
 
 const CodexCliEventType = {
   ThreadStarted: 'thread.started',
@@ -89,6 +154,7 @@ type ActiveCliSession = {
   imagePaths: string[];
   codexHomeDir: string | null;
   localClaudeConfig: LocalClaudeCodeEnvLoadResult | null;
+  configSource: ExternalAgentConfigSource;
   codexGeneratedImageIds: Set<string>;
 };
 
@@ -96,6 +162,18 @@ type ExternalCliRuntimeAdapterDeps = {
   engine: CliCoworkAgentEngine;
   store: CoworkStore;
   getCurrentProvider?: (appType: ExternalAgentProviderAppType) => ExternalAgentProvider | null;
+};
+
+type SpawnCommandSpec = {
+  command: string;
+  args: string[];
+  source: string;
+};
+
+type AssistantOutputStats = {
+  messageCount: number;
+  chars: number;
+  bytes: number;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -123,6 +201,46 @@ const firstString = (...values: unknown[]): string | null => {
     }
   }
   return null;
+};
+
+const ensureWindowsChildProcessHideInitScript = (): string | null => {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  try {
+    const initDir = path.join(os.tmpdir(), 'wesight-cowork-bin');
+    fs.mkdirSync(initDir, { recursive: true });
+    const initScriptPath = path.join(initDir, WINDOWS_HIDE_INIT_SCRIPT_NAME);
+    const existing = fs.existsSync(initScriptPath)
+      ? fs.readFileSync(initScriptPath, 'utf8')
+      : '';
+    if (existing !== WINDOWS_HIDE_INIT_SCRIPT_CONTENT) {
+      fs.writeFileSync(initScriptPath, WINDOWS_HIDE_INIT_SCRIPT_CONTENT, 'utf8');
+    }
+    return initScriptPath;
+  } catch {
+    return null;
+  }
+};
+
+export const appendNodeRequireOption = (nodeOptions: string | undefined, scriptPath: string): string => {
+  const quotedScriptPath = JSON.stringify(scriptPath);
+  if (nodeOptions?.includes(scriptPath) || nodeOptions?.includes(quotedScriptPath)) {
+    return nodeOptions;
+  }
+  return [nodeOptions?.trim(), `--require=${quotedScriptPath}`].filter(Boolean).join(' ');
+};
+
+const maskSecretForLog = (value: string | undefined): string => {
+  const text = value?.trim() ?? '';
+  if (!text) return '(not set)';
+  if (text.length <= 10) return `<redacted:${text.length}>`;
+  return `${text.slice(0, 5)}...${text.slice(-5)} (${text.length})`;
+};
+
+const looksLikePlaceholder = (value: string | undefined): boolean => {
+  return /^\$\{[^}]+\}$/.test(value?.trim() ?? '');
 };
 
 const firstNumber = (...values: unknown[]): number | null => {
@@ -271,23 +389,28 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     const env = await getEnhancedEnvWithTmpdir(cwd, 'local', {
       injectCoworkModelConfig: this.shouldInjectCoworkModelConfig(),
       apiConfigOverride,
+      proxyProbeUrl: this.engine === CoworkAgentEngine.Codex ? 'https://api.openai.com' : undefined,
     });
     let localClaudeConfig: LocalClaudeCodeEnvLoadResult | null = null;
+    const configSource = this.getConfigSource();
     const selectedProvider = this.getSelectedProviderForLocalCli();
-    if (this.engine === CoworkAgentEngine.ClaudeCode && this.getConfigSource() === ExternalAgentConfigSource.LocalCli) {
+    if (this.engine === CoworkAgentEngine.ClaudeCode && configSource === ExternalAgentConfigSource.LocalCli) {
       localClaudeConfig = applyLocalClaudeCodeEnvForPrintMode(env, selectedProvider);
     }
-    if (this.engine === CoworkAgentEngine.Codex && this.getConfigSource() === ExternalAgentConfigSource.LocalCli) {
-      this.applyCodexProviderEnvForExecMode(env, selectedProvider);
+    if (this.engine === CoworkAgentEngine.ClaudeCode && process.platform === 'win32') {
+      const windowsHideInitScript = ensureWindowsChildProcessHideInitScript();
+      if (windowsHideInitScript) {
+        env.NODE_OPTIONS = appendNodeRequireOption(env.NODE_OPTIONS, windowsHideInitScript);
+      }
     }
-    if (this.engine === CoworkAgentEngine.OpenCode && this.getConfigSource() === ExternalAgentConfigSource.WesightModel) {
+    if (this.engine === CoworkAgentEngine.OpenCode && configSource === ExternalAgentConfigSource.WesightModel) {
       this.applyOpenCodeRuntimeConfig(env, apiConfigOverride);
     }
-    if (this.engine === CoworkAgentEngine.QwenCode && this.getConfigSource() === ExternalAgentConfigSource.WesightModel) {
+    if (this.engine === CoworkAgentEngine.QwenCode && configSource === ExternalAgentConfigSource.WesightModel) {
       this.applyQwenCodeRuntimeConfig(env, apiConfigOverride);
     }
     const command = this.getCommandName();
-    const codexHomeDir = this.prepareCodexProviderHomeForExecMode(env, selectedProvider);
+    const codexHomeDir = this.prepareCodexHomeForExecMode(env, selectedProvider, apiConfigOverride);
     const args = this.buildCommandArgs(
       cwd,
       effectivePrompt,
@@ -298,7 +421,44 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       apiConfigOverride,
       claudeCodePermissionMode,
     );
-    const child = spawn(command, args, {
+    const spawnSpec = this.resolveSpawnCommandSpec(command, args, env);
+    if (this.engine === CoworkAgentEngine.ClaudeCode) {
+      console.log('[ExternalCliRuntimeAdapter] starting Claude Code CLI.', {
+        command: spawnSpec.command,
+        cwd,
+        configSource,
+        localConfig: this.describeLocalClaudeConfig(localClaudeConfig, configSource),
+        permissionMode: claudeCodePermissionMode,
+        baseUrl: env.ANTHROPIC_BASE_URL || '(not set)',
+        model: env.ANTHROPIC_MODEL || '(not set)',
+        defaultSonnetModel: env.ANTHROPIC_DEFAULT_SONNET_MODEL || '(not set)',
+        smallFastModel: env.ANTHROPIC_SMALL_FAST_MODEL || '(not set)',
+        anthropicApiKey: maskSecretForLog(env.ANTHROPIC_API_KEY),
+        anthropicAuthToken: maskSecretForLog(env.ANTHROPIC_AUTH_TOKEN),
+        apiKeyLooksLikePlaceholder: looksLikePlaceholder(env.ANTHROPIC_API_KEY),
+        authTokenLooksLikePlaceholder: looksLikePlaceholder(env.ANTHROPIC_AUTH_TOKEN),
+        nodeOptionsHasWindowsHidePreload: Boolean(env.NODE_OPTIONS?.includes(WINDOWS_HIDE_INIT_SCRIPT_NAME)),
+        argsWithoutPrompt: spawnSpec.args.slice(0, -1),
+        promptChars: effectivePrompt.length,
+      });
+      console.log(
+        '[ExternalCliRuntimeAdapter] Claude Code config diagnostics.',
+        buildClaudeCodeConfigDiagnostics(env, selectedProvider),
+      );
+    }
+    if (this.engine === CoworkAgentEngine.Codex) {
+      console.log('[ExternalCliRuntimeAdapter] starting Codex CLI.', {
+        command: spawnSpec.command,
+        cwd,
+        configSource,
+        usesTemporaryCodexHome: Boolean(codexHomeDir),
+        proxyEnv: this.summarizeProxyEnv(env),
+        spawnSource: spawnSpec.source,
+        argsWithoutPrompt: spawnSpec.args.slice(0, -1),
+        promptChars: effectivePrompt.length,
+      });
+    }
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -322,6 +482,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       imagePaths,
       codexHomeDir,
       localClaudeConfig,
+      configSource,
       codexGeneratedImageIds: new Set(),
     };
     active.startupTimer = setTimeout(() => {
@@ -332,6 +493,9 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     this.activeSessions.set(sessionId, active);
     if (this.engine === CoworkAgentEngine.ClaudeCode) {
       this.scheduleClaudeNoContentDiagnostics(active);
+    }
+    if (this.engine === CoworkAgentEngine.Codex) {
+      this.scheduleCodexNoJsonDiagnostics(active);
     }
 
     await new Promise<void>((resolve) => {
@@ -373,6 +537,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         this.cleanupImagePaths(active.imagePaths);
         this.cleanupCodexHomeDir(active.codexHomeDir);
         this.activeSessions.delete(sessionId);
+        this.logCliProcessFinished(active, code, signal);
 
         if (this.stoppedSessions.has(sessionId)) {
           this.store.updateSession(sessionId, { status: 'idle' });
@@ -618,7 +783,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return this.getCurrentProvider?.('claude') ?? null;
     }
     if (this.engine === CoworkAgentEngine.Codex) {
-      return this.getCurrentProvider?.('codex') ?? null;
+      return null;
     }
     if (this.engine === CoworkAgentEngine.OpenCode) {
       return this.getCurrentProvider?.('opencode') ?? null;
@@ -661,6 +826,106 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     return 'qwen';
   }
 
+  private resolveSpawnCommandSpec(
+    command: string,
+    args: string[],
+    env: Record<string, string | undefined>,
+  ): SpawnCommandSpec {
+    if (this.engine !== CoworkAgentEngine.Codex || process.platform !== 'win32') {
+      return { command, args, source: 'path' };
+    }
+
+    const codexJsPath = this.resolveWindowsCodexJsPath(env);
+    if (!codexJsPath) {
+      return { command, args, source: 'path' };
+    }
+
+    const nodeRuntime = this.resolveWindowsNodeRuntime(env);
+    if (!nodeRuntime) {
+      env.ELECTRON_RUN_AS_NODE = '1';
+      return {
+        command: getElectronNodeRuntimePath(),
+        args: [codexJsPath, ...args],
+        source: 'npm-global-js-electron-node',
+      };
+    }
+
+    return {
+      command: nodeRuntime,
+      args: [codexJsPath, ...args],
+      source: 'npm-global-js-node',
+    };
+  }
+
+  private resolveWindowsNodeRuntime(env: Record<string, string | undefined>): string | null {
+    const candidates = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
+      process.env['ProgramFiles(x86)'] ? path.join(process.env['ProgramFiles(x86)'] as string, 'nodejs', 'node.exe') : null,
+      env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : null,
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : null,
+    ].filter((item): item is string => Boolean(item?.trim()));
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    try {
+      const result = spawnSync('where.exe', ['node'], {
+        env: { ...env } as NodeJS.ProcessEnv,
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+      if (result.status !== 0) return null;
+      return result.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.toLowerCase().endsWith('node.exe') && fs.existsSync(line))
+        ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveWindowsCodexJsPath(env: Record<string, string | undefined>): string | null {
+    const homeDir = os.homedir();
+    const candidateDirs = [
+      ...this.getWindowsPathEntries(env),
+      env.APPDATA ? path.join(env.APPDATA, 'npm') : null,
+      process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : null,
+      path.join(homeDir, 'AppData', 'Roaming', 'npm'),
+      env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'pnpm') : null,
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'pnpm') : null,
+      path.join(homeDir, 'AppData', 'Local', 'pnpm'),
+      path.join(homeDir, '.npm-global', 'bin'),
+      path.join(homeDir, '.local', 'bin'),
+    ].filter((item): item is string => Boolean(item?.trim()));
+
+    const seen = new Set<string>();
+    for (const dir of candidateDirs) {
+      const normalized = path.resolve(dir);
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const codexJsPath = path.join(normalized, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+      if (fs.existsSync(codexJsPath)) {
+        return codexJsPath;
+      }
+    }
+
+    return null;
+  }
+
+  private getWindowsPathEntries(env: Record<string, string | undefined>): string[] {
+    const pathValue = env.PATH || env.Path || env.path || process.env.PATH || process.env.Path || '';
+    return pathValue
+      .split(path.delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
   private applyCodexProviderEnvForExecMode(
     env: Record<string, string | undefined>,
     provider: ExternalAgentProvider | null,
@@ -673,12 +938,23 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     }
   }
 
+  private prepareCodexHomeForExecMode(
+    env: Record<string, string | undefined>,
+    provider: ExternalAgentProvider | null,
+    apiConfigOverride?: ApiConfigOverride,
+  ): string | null {
+    if (this.engine !== CoworkAgentEngine.Codex) return null;
+    if (this.getConfigSource() === ExternalAgentConfigSource.WesightModel) {
+      return this.prepareCodexWesightModelHomeForExecMode(env, apiConfigOverride);
+    }
+    return this.prepareCodexProviderHomeForExecMode(env, provider);
+  }
+
   private prepareCodexProviderHomeForExecMode(
     env: Record<string, string | undefined>,
     provider: ExternalAgentProvider | null,
   ): string | null {
-    if (this.engine !== CoworkAgentEngine.Codex) return null;
-    if (this.getConfigSource() !== ExternalAgentConfigSource.LocalCli) return null;
+    if (this.getConfigSource() === ExternalAgentConfigSource.LocalCli) return null;
     if (!provider || provider.appType !== 'codex') return null;
 
     const auth = this.getNestedRecord(provider.settingsConfig, 'auth');
@@ -696,6 +972,52 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       console.warn('[ExternalCliRuntimeAdapter] Failed to prepare temporary Codex provider config:', error);
       return null;
     }
+  }
+
+  private prepareCodexWesightModelHomeForExecMode(
+    env: Record<string, string | undefined>,
+    apiConfigOverride?: ApiConfigOverride,
+  ): string | null {
+    const resolved = resolveRawApiConfig(apiConfigOverride);
+    if (!resolved.config) return null;
+    if (resolved.config.apiType === 'anthropic') return null;
+    const apiKey = resolved.config.apiKey.trim();
+    const baseUrl = resolved.config.baseURL.trim();
+    if (!apiKey || !baseUrl) return null;
+
+    try {
+      const providerName = resolved.providerMetadata?.providerName || 'wesight';
+      const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wesight-codex-home-'));
+      fs.writeFileSync(path.join(codexHomeDir, 'auth.json'), `${JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)}\n`, 'utf8');
+      fs.writeFileSync(
+        path.join(codexHomeDir, 'config.toml'),
+        this.buildCodexRuntimeConfig(providerName, baseUrl, resolved.config.model),
+        'utf8',
+      );
+      env.CODEX_HOME = codexHomeDir;
+      env.OPENAI_API_KEY = apiKey;
+      return codexHomeDir;
+    } catch (error) {
+      console.warn('[ExternalCliRuntimeAdapter] Failed to prepare temporary Codex WeSight config:', error);
+      return null;
+    }
+  }
+
+  private buildCodexRuntimeConfig(providerName: string, baseUrl: string, model: string): string {
+    const providerKey = this.sanitizeCodexProviderKey(providerName);
+    return [
+      `model_provider = ${this.tomlString(providerKey)}`,
+      `model = ${this.tomlString(model || 'gpt-5.1-codex-max')}`,
+      'model_reasoning_effort = "high"',
+      'disable_response_storage = true',
+      '',
+      `[model_providers.${providerKey}]`,
+      `name = ${this.tomlString(providerName || providerKey)}`,
+      `base_url = ${this.tomlString(baseUrl)}`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      '',
+    ].join('\n');
   }
 
   private overrideCodexConfigModel(configText: string, model: string): string {
@@ -722,6 +1044,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
   }
 
   private buildCodexProviderOverrideArgs(provider: ExternalAgentProvider | null): string[] {
+    if (this.getConfigSource() === ExternalAgentConfigSource.LocalCli) return [];
     if (!provider || provider.appType !== 'codex') return [];
     const providerKey = this.sanitizeCodexProviderKey(provider.id || provider.name);
     const model = provider.summary.model.trim();
@@ -752,6 +1075,15 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
 
   private tomlString(value: string): string {
     return JSON.stringify(value);
+  }
+
+  private summarizeProxyEnv(env: Record<string, string | undefined>): Record<string, boolean> {
+    return {
+      httpProxy: Boolean(env.HTTP_PROXY || env.http_proxy),
+      httpsProxy: Boolean(env.HTTPS_PROXY || env.https_proxy),
+      allProxy: Boolean(env.ALL_PROXY || env.all_proxy),
+      noProxy: Boolean(env.NO_PROXY || env.no_proxy),
+    };
   }
 
   private getNestedRecord(value: unknown, key: string): Record<string, unknown> {
@@ -787,13 +1119,21 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     claudeCodePermissionMode: ClaudeCodePermissionMode,
   ): string {
     const history = this.buildHistoryContext(sessionId, prompt);
-    const runtimeNoteLines = [
-      'Runtime note:',
-      '- Use the user-level CLI configuration that the local engine already loads.',
-      '- Project memory files such as SOUL.md, USER.md, MEMORY.md, and memory/YYYY-MM-DD.md are optional.',
-      '- If an optional memory file is missing, skip it silently and continue.',
-      '- Create memory files only when the user explicitly asks to remember or persist information.',
-    ];
+    const runtimeNoteLines = this.engine === CoworkAgentEngine.Codex
+      ? [
+        'Runtime note:',
+        '- Use the user-level Codex CLI configuration that Codex already loads.',
+        '- For simple identity, capability, or general chat questions, answer directly without inspecting project files.',
+        '- Use shell commands and read project files only when they are needed to answer or complete the user request.',
+        '- Create memory files only when the user explicitly asks to remember or persist information.',
+      ]
+      : [
+        'Runtime note:',
+        '- Use the user-level CLI configuration that the local engine already loads.',
+        '- Project memory files such as SOUL.md, USER.md, MEMORY.md, and memory/YYYY-MM-DD.md are optional.',
+        '- If an optional memory file is missing, skip it silently and continue.',
+        '- Create memory files only when the user explicitly asks to remember or persist information.',
+      ];
     if (this.engine === CoworkAgentEngine.ClaudeCode) {
       if (claudeCodePermissionMode === ClaudeCodePermissionMode.Plan) {
         runtimeNoteLines.push(
@@ -863,7 +1203,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       if (!this.activeSessions.has(active.sessionId)) return;
       if (active.sawClaudeVisibleOutput || active.assistantMessageId) return;
       this.addSystemMessage(active.sessionId, t('externalCliClaudeWaitingForOutput', {
-        provider: this.describeLocalClaudeConfig(active.localClaudeConfig),
+        provider: this.describeLocalClaudeConfig(active.localClaudeConfig, active.configSource),
       }));
     }, CLAUDE_NO_CONTENT_NOTICE_MS);
 
@@ -872,10 +1212,22 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       if (active.sawClaudeVisibleOutput || active.assistantMessageId) return;
       active.stderrTail = this.appendStderrTail(active.stderrTail, t('externalCliClaudeNoOutputTimeout', {
         seconds: Math.round(CLAUDE_NO_CONTENT_TIMEOUT_MS / 1000),
-        provider: this.describeLocalClaudeConfig(active.localClaudeConfig),
+        provider: this.describeLocalClaudeConfig(active.localClaudeConfig, active.configSource),
       }));
       active.child.kill('SIGTERM');
     }, CLAUDE_NO_CONTENT_TIMEOUT_MS);
+  }
+
+  private scheduleCodexNoJsonDiagnostics(active: ActiveCliSession): void {
+    active.noContentNoticeTimer = setTimeout(() => {
+      if (!this.activeSessions.has(active.sessionId)) return;
+      if (active.sawEvent || active.assistantMessageId) return;
+      console.warn('[ExternalCliRuntimeAdapter] Codex CLI is still waiting for JSON output.', {
+        configSource: active.configSource,
+        stderrChars: active.stderrTail.length,
+        stderrTail: active.stderrTail.trim().slice(-1000),
+      });
+    }, CODEX_NO_JSON_NOTICE_MS);
   }
 
   private markClaudeVisibleOutput(active: ActiveCliSession): void {
@@ -891,7 +1243,13 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     }
   }
 
-  private describeLocalClaudeConfig(config: LocalClaudeCodeEnvLoadResult | null): string {
+  private describeLocalClaudeConfig(
+    config: LocalClaudeCodeEnvLoadResult | null,
+    configSource: ExternalAgentConfigSource,
+  ): string {
+    if (configSource === ExternalAgentConfigSource.WesightModel) {
+      return t('externalCliClaudeWesightModelConfig');
+    }
     if (!config) {
       return t('externalCliClaudeLocalConfigUnknown');
     }
@@ -1047,7 +1405,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
   private handleCodexItem(active: ActiveCliSession, item: Record<string, unknown>, completed: boolean): void {
     const itemType = String(item.type ?? '');
     if (itemType === CodexCliItemType.AgentMessage) {
-      const text = firstString(item.text, item.message, item.content);
+      const text = this.extractCodexText(item);
       if (text) {
         this.replaceAssistant(active, text, completed);
       }
@@ -1512,6 +1870,108 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     }
   }
 
+  private extractCodexText(value: unknown): string | null {
+    if (typeof value === 'string') {
+      return value.trim() ? value : null;
+    }
+    if (Array.isArray(value)) {
+      const parts = value
+        .map((item) => this.extractCodexText(item))
+        .filter((item): item is string => Boolean(item));
+      return parts.length > 0 ? parts.join('') : null;
+    }
+    if (!isRecord(value)) return null;
+    const direct = firstString(value.text, value.message, value.content, value.output);
+    if (direct) return direct;
+    return this.extractCodexText(value.text)
+      ?? this.extractCodexText(value.message)
+      ?? this.extractCodexText(value.content)
+      ?? this.extractCodexText(value.output)
+      ?? this.extractCodexText(value.payload);
+  }
+
+  private summarizeClaudeCliEvent(event: Record<string, unknown>): Record<string, unknown> {
+    const type = String(event.type ?? '');
+    const summary: Record<string, unknown> = {
+      type,
+      subtype: firstString(event.subtype) ?? undefined,
+    };
+    if (typeof event.session_id === 'string') {
+      summary.sessionId = event.session_id;
+    }
+    if (typeof event.model === 'string') {
+      summary.model = event.model;
+    }
+    if (type === 'system' && event.subtype === 'init') {
+      summary.cwd = firstString(event.cwd);
+      summary.tools = Array.isArray(event.tools) ? event.tools.length : undefined;
+      summary.mcpServers = Array.isArray(event.mcp_servers) ? event.mcp_servers.length : undefined;
+      return summary;
+    }
+    if (type === 'stream_event' && isRecord(event.event)) {
+      const streamEvent = event.event;
+      const streamType = String(streamEvent.type ?? '');
+      summary.streamType = streamType;
+      if (typeof streamEvent.index === 'number') {
+        summary.index = streamEvent.index;
+      }
+      if (isRecord(streamEvent.delta)) {
+        const delta = streamEvent.delta;
+        const text = firstString(delta.text, delta.thinking);
+        summary.deltaType = firstString(delta.type) ?? undefined;
+        summary.textChars = text?.length ?? 0;
+      }
+      if (isRecord(streamEvent.message)) {
+        summary.message = this.summarizeClaudeMessage(streamEvent.message);
+      }
+      return summary;
+    }
+    if (type === 'assistant' && isRecord(event.message)) {
+      summary.message = this.summarizeClaudeMessage(event.message);
+      return summary;
+    }
+    if (type === 'result') {
+      const result = firstString(event.result);
+      const error = firstString(event.error);
+      summary.resultChars = result?.length ?? 0;
+      summary.error = error;
+      summary.isError = String(event.subtype ?? 'success') !== 'success';
+      return summary;
+    }
+    return summary;
+  }
+
+  private summarizeClaudeMessage(message: Record<string, unknown>): Record<string, unknown> {
+    const content = message.content;
+    const summary: Record<string, unknown> = {
+      id: firstString(message.id) ?? undefined,
+      role: firstString(message.role) ?? undefined,
+      model: firstString(message.model) ?? undefined,
+      stopReason: firstString(message.stop_reason, message.stopReason) ?? undefined,
+    };
+    if (!Array.isArray(content)) {
+      const text = firstString(content);
+      summary.contentShape = typeof content;
+      summary.textChars = text?.length ?? 0;
+      return summary;
+    }
+    const blockSummaries = content
+      .filter(isRecord)
+      .map((block) => {
+        const blockType = String(block.type ?? '');
+        const text = firstString(block.text, block.thinking);
+        return {
+          type: blockType,
+          name: firstString(block.name) ?? undefined,
+          textChars: text?.length ?? 0,
+        };
+      });
+    summary.contentShape = 'array';
+    summary.contentBlocks = blockSummaries;
+    summary.totalTextChars = blockSummaries.reduce((total, block) => total + block.textChars, 0);
+    return summary;
+  }
+
   private extractClaudeCliError(event: Record<string, unknown>): string | null {
     const status = firstNumber(event.apiErrorStatus, event.status, event.status_code);
     const explicitApiError = event.isApiErrorMessage === true || status !== null;
@@ -1685,6 +2145,36 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     return session.messages
       .slice(active.initialMessageCount)
       .some((message) => message.type === 'assistant' || message.type === 'system' || message.type === 'tool_use' || message.type === 'tool_result');
+  }
+
+  private getAssistantOutputStats(active: ActiveCliSession): AssistantOutputStats {
+    const session = this.store.getSession(active.sessionId);
+    const assistantMessages = session?.messages
+      .slice(active.initialMessageCount)
+      .filter((message) => message.type === 'assistant')
+      ?? [];
+    const content = assistantMessages.map((message) => message.content).join('');
+    return {
+      messageCount: assistantMessages.length,
+      chars: content.length,
+      bytes: Buffer.byteLength(content, 'utf8'),
+    };
+  }
+
+  private logCliProcessFinished(active: ActiveCliSession, code: number | null, signal: NodeJS.Signals | null): void {
+    const assistantOutput = this.getAssistantOutputStats(active);
+    console.log('[ExternalCliRuntimeAdapter] CLI process finished.', {
+      engine: this.getEngineDisplayName(),
+      exitCode: code,
+      signal,
+      cliSessionId: active.cliSessionId || '(not set)',
+      assistantMessageCount: assistantOutput.messageCount,
+      assistantOutputChars: assistantOutput.chars,
+      assistantOutputBytes: assistantOutput.bytes,
+      hasAssistantOutput: assistantOutput.bytes > 0,
+      hasVisibleOutput: this.hasVisibleOutput(active),
+      stderrChars: active.stderrTail.length,
+    });
   }
 
   private getEngineDisplayName(): string {

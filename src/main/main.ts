@@ -521,8 +521,8 @@ const enableVerboseLogging =
   process.env.ELECTRON_ENABLE_LOGGING === '1' ||
   process.env.ELECTRON_ENABLE_LOGGING === 'true';
 const disableGpu =
-  process.env.LOBSTERAI_DISABLE_GPU === '1' ||
-  process.env.LOBSTERAI_DISABLE_GPU === 'true' ||
+  process.env.WESIGHT_DISABLE_GPU === '1' ||
+  process.env.WESIGHT_DISABLE_GPU === 'true' ||
   process.env.ELECTRON_DISABLE_GPU === '1' ||
   process.env.ELECTRON_DISABLE_GPU === 'true';
 const reloadOnChildProcessGone =
@@ -4369,6 +4369,9 @@ if (!gotTheLock) {
       applyExternalAgentConfigSourceForEngine(activeEngine);
       const runtimeSnapshot = resolveSessionRuntimeSnapshot(activeEngine);
       prepareRuntimeSnapshotForTurn(runtimeSnapshot);
+      console.log(
+        `[CoworkSession] starting session with ${getDesktopPetEngineLabel(activeEngine)} using ${runtimeSnapshot.configSource} config.`,
+      );
 
       // Generate title from first line of prompt
       const fallbackTitle = options.prompt.split('\n')[0].slice(0, 50) || 'New Session';
@@ -4517,6 +4520,9 @@ if (!gotTheLock) {
       }
       applyExternalAgentConfigSourceForEngine(activeEngine);
       prepareRuntimeSnapshotForTurn(runtimeSnapshot);
+      console.log(
+        `[CoworkSession] continuing session with ${getDesktopPetEngineLabel(activeEngine)} using ${runtimeSnapshot.configSource} config.`,
+      );
 
       const runtime = getCoworkEngineRouter();
       if (existingSession?.cwd) {

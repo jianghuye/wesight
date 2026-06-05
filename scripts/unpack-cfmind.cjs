@@ -4,13 +4,13 @@
  * Windows 安装后资源 tar 解压脚本
  *
  * 由 NSIS installer.nsh 的 customInstall 宏调用。
- * 通过 LobsterAI.exe (ELECTRON_RUN_AS_NODE=1 模式) 执行。
+ * 通过 WeSight.exe (ELECTRON_RUN_AS_NODE=1 模式) 执行。
  *
- * 用法: LobsterAI.exe <本脚本路径> <tarPath> <destDir>
+ * 用法: WeSight.exe <本脚本路径> <tarPath> <destDir>
  *
  * 效果:
  *   输入: $INSTDIR/resources/win-resources.tar
- *   输出: $INSTDIR/resources/cfmind/, SKILLs/, python-win/
+ *   输出: $INSTDIR/resources/SKILLs/, python-win/
  *   tar 文件由 NSIS 脚本在解压后删除
  *
  * 依赖: 从 app.asar 内加载 tar npm 包 (Electron 内置 ASAR 透明读取支持)
@@ -27,7 +27,7 @@ const tarPath = process.argv[2];
 const destDir = process.argv[3];
 
 if (!tarPath || !destDir) {
-  console.error('[unpack-cfmind] Usage: LobsterAI.exe unpack-cfmind.cjs <tarPath> <destDir>');
+  console.error('[unpack-cfmind] Usage: WeSight.exe unpack-cfmind.cjs <tarPath> <destDir>');
   process.exit(1);
 }
 
@@ -88,7 +88,7 @@ try {
   console.log(`[unpack-cfmind] Done in ${elapsed}s`);
 
   // Verify key directories exist
-  const expectedDirs = ['cfmind'];
+  const expectedDirs = ['SKILLs', 'python-win'];
   for (const dir of expectedDirs) {
     const dirPath = path.join(destDir, dir);
     if (fs.existsSync(dirPath)) {

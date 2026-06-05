@@ -75,7 +75,7 @@ const createOpenAICompatAppConfig = () => ({
 });
 
 const createSessionStore = () => ({
-  'agent:main:lobsterai:current-session': {
+  'agent:main:wesight:current-session': {
     sessionId: 'session-current',
     modelProvider: 'lobster',
     model: 'kimi-k2.5',
@@ -84,7 +84,7 @@ const createSessionStore = () => ({
       model: 'kimi-k2.5',
     },
   },
-  'agent:main:lobsterai:old-claude-session': {
+  'agent:main:wesight:old-claude-session': {
     sessionId: 'session-old-claude',
     modelProvider: 'lobster',
     model: 'claude-sonnet-4-5-20250929',
@@ -173,15 +173,15 @@ test('sync writes native moonshot provider config and migrates matching managed 
   assert.equal(config.browser.enabled, true);
 
   const sessionStore = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'sessions.json'), 'utf8'));
-  assert.equal(sessionStore['agent:main:lobsterai:current-session'].modelProvider, 'moonshot');
-  assert.equal(sessionStore['agent:main:lobsterai:current-session'].model, 'kimi-k2.5');
+  assert.equal(sessionStore['agent:main:wesight:current-session'].modelProvider, 'moonshot');
+  assert.equal(sessionStore['agent:main:wesight:current-session'].model, 'kimi-k2.5');
   assert.equal(
-    sessionStore['agent:main:lobsterai:current-session'].systemPromptReport.provider,
+    sessionStore['agent:main:wesight:current-session'].systemPromptReport.provider,
     'moonshot',
   );
-  assert.equal(sessionStore['agent:main:lobsterai:old-claude-session'].modelProvider, 'lobster');
+  assert.equal(sessionStore['agent:main:wesight:old-claude-session'].modelProvider, 'lobster');
   assert.equal(
-    sessionStore['agent:main:lobsterai:old-claude-session'].model,
+    sessionStore['agent:main:wesight:old-claude-session'].model,
     'claude-sonnet-4-5-20250929',
   );
   assert.equal(sessionStore['agent:main:wecom:direct:wangning'].execSecurity, 'full');
@@ -215,14 +215,14 @@ test('sync maps moonshot coding plan sessions to kimi-coding model refs', t => {
   assert.deepEqual(config.commands.ownerAllowFrom, ['gateway-client', '*']);
 
   const sessionStore = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'sessions.json'), 'utf8'));
-  assert.equal(sessionStore['agent:main:lobsterai:current-session'].modelProvider, 'moonshot');
-  assert.equal(sessionStore['agent:main:lobsterai:current-session'].model, 'kimi-k2.5');
+  assert.equal(sessionStore['agent:main:wesight:current-session'].modelProvider, 'moonshot');
+  assert.equal(sessionStore['agent:main:wesight:current-session'].model, 'kimi-k2.5');
   assert.equal(
-    sessionStore['agent:main:lobsterai:current-session'].systemPromptReport.provider,
+    sessionStore['agent:main:wesight:current-session'].systemPromptReport.provider,
     'moonshot',
   );
   assert.equal(
-    sessionStore['agent:main:lobsterai:current-session'].systemPromptReport.model,
+    sessionStore['agent:main:wesight:current-session'].systemPromptReport.model,
     'kimi-k2.5',
   );
   assert.equal(sessionStore['agent:main:wecom:direct:wangning'].execSecurity, 'full');
@@ -251,8 +251,8 @@ test('sync denies exec for native channel sessions even without provider migrati
   assert.equal(result.changed, true);
 
   const sessionStore = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'sessions.json'), 'utf8'));
-  assert.equal(sessionStore['agent:main:lobsterai:current-session'].modelProvider, 'openai');
-  assert.equal(sessionStore['agent:main:lobsterai:current-session'].model, 'kimi-k2.5');
+  assert.equal(sessionStore['agent:main:wesight:current-session'].modelProvider, 'openai');
+  assert.equal(sessionStore['agent:main:wesight:current-session'].model, 'kimi-k2.5');
   assert.equal(sessionStore['agent:main:wecom:direct:wangning'].execSecurity, 'full');
   assert.equal(sessionStore['agent:main:feishu:dm:ou_123'].execSecurity, 'full');
   assert.equal('skillsSnapshot' in sessionStore['agent:main:wecom:direct:wangning'], false);
@@ -331,6 +331,42 @@ test('sync preserves existing AGENTS.md content above the WeSight managed marker
   assert.doesNotMatch(agentsMd, /^# AGENTS\.md - Your Workspace/m);
 });
 
+test('sync replaces legacy LobsterAI managed AGENTS.md block', t => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-agents-legacy-marker-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  setElectronPaths(tmpDir);
+
+  const workspaceDir = path.join(tmpDir, 'workspace');
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(workspaceDir, 'AGENTS.md'),
+    [
+      '# Custom Workspace Notes',
+      '',
+      'Keep this line.',
+      '',
+      '<!-- LobsterAI managed: do not edit below this line -->',
+      '',
+      'Stale managed instructions.',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const sync = createSync(tmpDir, createAppConfig(), {
+    workingDirectory: workspaceDir,
+  });
+  const result = sync.sync('test-agents-legacy-marker');
+
+  assert.equal(result.ok, true);
+
+  const agentsMd = fs.readFileSync(path.join(workspaceDir, 'AGENTS.md'), 'utf8');
+  assert.match(agentsMd, /^# Custom Workspace Notes\n\nKeep this line\./);
+  assert.match(agentsMd, /<!-- WeSight managed: do not edit below this line -->/);
+  assert.doesNotMatch(agentsMd, /<!-- LobsterAI managed: do not edit below this line -->/);
+  assert.doesNotMatch(agentsMd, /Stale managed instructions\./);
+});
+
 test('sync backfills the default OpenClaw AGENTS template when an old workspace only has legacy managed content', t => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-agents-backfill-'));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -341,7 +377,7 @@ test('sync backfills the default OpenClaw AGENTS template when an old workspace 
   fs.writeFileSync(
     path.join(workspaceDir, 'AGENTS.md'),
     [
-      '<!-- LobsterAI managed: do not edit below this line -->',
+      '<!-- WeSight managed: do not edit below this line -->',
       '',
       '## System Prompt',
       '',
@@ -364,6 +400,44 @@ test('sync backfills the default OpenClaw AGENTS template when an old workspace 
   assert.match(agentsMd, /<!-- WeSight managed: do not edit below this line -->/);
   assert.match(agentsMd, /## Scheduled Tasks/);
   assert.doesNotMatch(agentsMd, /Old managed-only content\./);
+});
+
+test('sync migrates legacy LobsterAI managed session model refs', t => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-legacy-session-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  setElectronPaths(tmpDir);
+
+  const sessionsDir = path.join(tmpDir, 'state', 'agents', 'main', 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  const sessionStore = {
+    'agent:main:lobsterai:legacy-session': {
+      sessionId: 'legacy-session',
+      modelProvider: 'lobster',
+      model: 'kimi-k2.5',
+      systemPromptReport: {
+        provider: 'lobster',
+        model: 'kimi-k2.5',
+      },
+    },
+  };
+  fs.writeFileSync(
+    path.join(sessionsDir, 'sessions.json'),
+    `${JSON.stringify(sessionStore, null, 2)}\n`,
+    'utf8',
+  );
+
+  const sync = createSync(tmpDir, createAppConfig());
+  const result = sync.sync('test-legacy-session-migration');
+
+  assert.equal(result.ok, true);
+
+  const migratedStore = JSON.parse(fs.readFileSync(path.join(sessionsDir, 'sessions.json'), 'utf8'));
+  const legacySession = migratedStore['agent:main:lobsterai:legacy-session'];
+  assert.equal(legacySession.modelProvider, 'moonshot');
+  assert.equal(legacySession.model, 'kimi-k2.5');
+  assert.equal(legacySession.systemPromptReport.provider, 'moonshot');
+  assert.equal(legacySession.systemPromptReport.model, 'kimi-k2.5');
 });
 
 test('sync disables legacy qqbot-cron skill so QQ reminders use native cron', t => {

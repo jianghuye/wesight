@@ -150,11 +150,10 @@ test('getSessionKeysForSession prefers channel keys before managed fallback', ()
     'session-1',
     'agent:main:openai-user:dingtalk-connector:__default__:2459325231940374',
   );
-  adapter.rememberSessionKey('session-1', 'agent:main:lobsterai:session-1');
+  adapter.rememberSessionKey('session-1', 'agent:main:wesight:session-1');
 
   assert.deepEqual(adapter.getSessionKeysForSession('session-1'), [
     'agent:main:openai-user:dingtalk-connector:__default__:2459325231940374',
-    'agent:main:lobsterai:session-1',
     'agent:main:wesight:session-1',
   ]);
 });

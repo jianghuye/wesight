@@ -1,11 +1,15 @@
 import Database from 'better-sqlite3';
-import { expect,test } from 'vitest';
+import { expect, test } from 'vitest';
 
 import {
-BindingKind, DeliveryChannel,
-  DeliveryMode,   OriginKind, PayloadKind,
-ScheduleKind, } from './constants';
-import { makeModel,makeTask } from './fixtures';
+  BindingKind,
+  DeliveryChannel,
+  DeliveryMode,
+  OriginKind,
+  PayloadKind,
+  ScheduleKind,
+} from './constants';
+import { makeModel, makeTask } from './fixtures';
 import { ScheduledTaskMetaStore } from './metaStore';
 import { TaskModelMapper } from './modelMapper';
 import { taskPolicyRegistry } from './policies/registry';
@@ -72,7 +76,7 @@ test('integration: cowork task -> delivery change to webhook -> binding stays', 
 
 test('integration: infer -> persist -> reload uses stored meta (not re-infer)', () => {
   const metaStore = createMetaStore();
-  const wire = makeTask({ sessionKey: 'agent:main:lobsterai:sess-99' });
+  const wire = makeTask({ sessionKey: 'agent:main:wesight:sess-99' });
 
   // 1. First load -- infer
   const model1 = mapper.fromWire(wire);

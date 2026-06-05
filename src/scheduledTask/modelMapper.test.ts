@@ -33,7 +33,7 @@ test('mapper.fromWire: with explicit meta, uses meta directly', () => {
 });
 
 test('mapper.fromWire: without meta, falls back to infer', () => {
-  const wire = makeTask({ sessionKey: 'agent:main:lobsterai:sess-1' });
+  const wire = makeTask({ sessionKey: 'agent:main:wesight:sess-1' });
   const model = mapper.fromWire(wire);
   expect(model.origin.kind).toBe(OriginKind.Cowork);
   expect(model.binding.kind).toBe(BindingKind.UISession);

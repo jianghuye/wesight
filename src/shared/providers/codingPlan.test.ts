@@ -1,4 +1,4 @@
-import { describe,expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 
 import { resolveCodingPlanBaseUrl } from './codingPlan';
 import { ProviderName } from './constants';
@@ -16,14 +16,14 @@ describe('resolveCodingPlanBaseUrl', () => {
     expect(result.effectiveFormat).toBe('openai');
   });
 
-  describe('Zhipu — preferredCodingPlanFormat=openai', () => {
-    test('forces openai URL even when caller passes anthropic format', () => {
+  describe('Zhipu', () => {
+    test('keeps anthropic URL when caller passes anthropic format', () => {
       const result = resolveCodingPlanBaseUrl(ProviderName.Zhipu, true, 'anthropic', 'https://open.bigmodel.cn/api/anthropic');
-      expect(result.baseUrl).toBe('https://open.bigmodel.cn/api/coding/paas/v4');
-      expect(result.effectiveFormat).toBe('openai');
+      expect(result.baseUrl).toBe('https://open.bigmodel.cn/api/anthropic');
+      expect(result.effectiveFormat).toBe('anthropic');
     });
 
-    test('uses openai URL when caller also passes openai format', () => {
+    test('uses openai URL when caller passes openai format', () => {
       const result = resolveCodingPlanBaseUrl(ProviderName.Zhipu, true, 'openai', 'https://open.bigmodel.cn/api/paas/v4');
       expect(result.baseUrl).toBe('https://open.bigmodel.cn/api/coding/paas/v4');
       expect(result.effectiveFormat).toBe('openai');

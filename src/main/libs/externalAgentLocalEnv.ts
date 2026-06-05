@@ -7,6 +7,7 @@ import { resolveRawApiConfig } from './claudeSettings';
 
 type LocalClaudeConfig = {
   sourceName: string;
+  configPath?: string;
   env: Record<string, unknown>;
   meta: Record<string, unknown>;
 };
@@ -34,6 +35,7 @@ const CLAUDE_ENV_KEYS = [
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
 ] as const;
+type ClaudeEnvKey = typeof CLAUDE_ENV_KEYS[number];
 
 const INTERNAL_PROVIDER_META_KEY = '__wesightProviderMeta';
 
@@ -74,6 +76,21 @@ const getString = (value: unknown): string => {
   return typeof value === 'string' ? value.trim() : '';
 };
 
+const maskSecretForLog = (value: unknown): string => {
+  const text = getString(value);
+  if (!text) return '(not set)';
+  if (text.length <= 10) return `<redacted:${text.length}>`;
+  return `${text.slice(0, 5)}...${text.slice(-5)} (${text.length})`;
+};
+
+const looksLikePlaceholder = (value: unknown): boolean => {
+  return /^\$\{[^}]+\}$/.test(getString(value));
+};
+
+const isClaudeSecretEnvKey = (key: ClaudeEnvKey): boolean => (
+  key === 'ANTHROPIC_AUTH_TOKEN' || key === 'ANTHROPIC_API_KEY'
+);
+
 const normalizeBaseUrlForMatch = (value: string): string => {
   const trimmed = value.trim().replace(/\/+$/, '');
   if (!trimmed) return '';
@@ -109,15 +126,16 @@ const readCurrentCcSwitchClaudeConfig = (): LocalClaudeConfig | null => {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const provider = currentProviderId
       ? db
-        .prepare('SELECT name, settings_config, meta FROM providers WHERE app_type = ? AND id = ? LIMIT 1')
-        .get('claude', currentProviderId) as { name?: string; settings_config?: string; meta?: string } | undefined
+        .prepare('SELECT id, name, settings_config, meta FROM providers WHERE app_type = ? AND id = ? LIMIT 1')
+        .get('claude', currentProviderId) as { id?: string; name?: string; settings_config?: string; meta?: string } | undefined
       : db
-        .prepare('SELECT name, settings_config, meta FROM providers WHERE app_type = ? AND is_current = 1 LIMIT 1')
-        .get('claude') as { name?: string; settings_config?: string; meta?: string } | undefined;
+        .prepare('SELECT id, name, settings_config, meta FROM providers WHERE app_type = ? AND is_current = 1 LIMIT 1')
+        .get('claude') as { id?: string; name?: string; settings_config?: string; meta?: string } | undefined;
     if (!provider) return null;
 
     return {
-      sourceName: provider.name || 'local provider',
+      sourceName: provider.name ? `cc-switch provider: ${provider.name}` : 'cc-switch provider',
+      configPath: `${dbPath}${provider.id ? `#${provider.id}` : ''}`,
       env: getNestedRecord(parseJsonObject(provider.settings_config), 'env'),
       meta: parseJsonObject(provider.meta),
     };
@@ -138,6 +156,7 @@ const readClaudeSettingsConfig = (): LocalClaudeConfig | null => {
   if (!settings) return null;
   return {
     sourceName: 'Claude Code settings',
+    configPath: settingsPath,
     env: getNestedRecord(settings, 'env'),
     meta: {},
   };
@@ -149,8 +168,75 @@ const buildLocalClaudeConfigFromProvider = (
   if (!provider) return null;
   return {
     sourceName: provider.name,
+    configPath: 'WeSight selected local provider',
     env: getNestedRecord(provider.settingsConfig, 'env'),
     meta: getNestedRecord(provider.settingsConfig, INTERNAL_PROVIDER_META_KEY),
+  };
+};
+
+const readLocalClaudeConfigsForDiagnostics = (
+  provider?: LocalClaudeCodeProviderConfig | null,
+): LocalClaudeConfig[] => {
+  const configs = [
+    buildLocalClaudeConfigFromProvider(provider),
+    readCurrentCcSwitchClaudeConfig(),
+    readClaudeSettingsConfig(),
+  ].filter((config): config is LocalClaudeConfig => Boolean(config));
+
+  const seen = new Set<string>();
+  return configs.filter((config) => {
+    const fingerprint = `${config.sourceName}\n${config.configPath ?? ''}`;
+    if (seen.has(fingerprint)) return false;
+    seen.add(fingerprint);
+    return true;
+  });
+};
+
+const summarizeClaudeEnv = (env: Record<string, unknown>): Record<ClaudeEnvKey, string> => {
+  const summary = {} as Record<ClaudeEnvKey, string>;
+  for (const key of CLAUDE_ENV_KEYS) {
+    const value = getString(env[key]);
+    if (!value) {
+      summary[key] = '(not set)';
+      continue;
+    }
+    summary[key] = isClaudeSecretEnvKey(key) ? maskSecretForLog(value) : value;
+  }
+  return summary;
+};
+
+const collectClaudeEnvConflicts = (
+  childEnv: Record<string, string | undefined>,
+  localEnv: Record<string, unknown>,
+): string[] => {
+  const conflicts: string[] = [];
+  for (const key of CLAUDE_ENV_KEYS) {
+    const childValue = getString(childEnv[key]);
+    const localValue = getString(localEnv[key]);
+    if (!childValue || !localValue || childValue === localValue) {
+      continue;
+    }
+    const childDisplay = isClaudeSecretEnvKey(key) ? maskSecretForLog(childValue) : childValue;
+    const localDisplay = isClaudeSecretEnvKey(key) ? maskSecretForLog(localValue) : localValue;
+    conflicts.push(`${key}: child=${childDisplay} local=${localDisplay}`);
+  }
+  return conflicts;
+};
+
+export const buildClaudeCodeConfigDiagnostics = (
+  childEnv: Record<string, string | undefined>,
+  provider?: LocalClaudeCodeProviderConfig | null,
+): Record<string, unknown> => {
+  const localConfigs = readLocalClaudeConfigsForDiagnostics(provider).map((config) => ({
+    source: config.sourceName,
+    configPath: config.configPath ?? '(unknown)',
+    env: summarizeClaudeEnv(config.env),
+    conflictsWithChildEnv: collectClaudeEnvConflicts(childEnv, config.env),
+  }));
+
+  return {
+    childEnv: summarizeClaudeEnv(childEnv),
+    localConfigs,
   };
 };
 
@@ -216,7 +302,17 @@ export const applyLocalClaudeCodeEnvForPrintMode = (
     env.ANTHROPIC_AUTH_TOKEN = credential.value;
   }
 
-  console.log(`[ExternalAgentLocalEnv] loaded local Claude Code config for ${localConfig.sourceName}.`);
+  console.log('[ExternalAgentLocalEnv] loaded local Claude Code config.', {
+    source: localConfig.sourceName,
+    baseUrl: getString(localConfig.env.ANTHROPIC_BASE_URL) || '(not set)',
+    model: getString(localConfig.env.ANTHROPIC_MODEL) || '(not set)',
+    defaultSonnetModel: getString(localConfig.env.ANTHROPIC_DEFAULT_SONNET_MODEL) || '(not set)',
+    credentialSource: credential?.source ?? '(not set)',
+    anthropicApiKey: maskSecretForLog(env.ANTHROPIC_API_KEY),
+    anthropicAuthToken: maskSecretForLog(env.ANTHROPIC_AUTH_TOKEN),
+    apiKeyLooksLikePlaceholder: looksLikePlaceholder(env.ANTHROPIC_API_KEY),
+    authTokenLooksLikePlaceholder: looksLikePlaceholder(env.ANTHROPIC_AUTH_TOKEN),
+  });
   return {
     sourceName: localConfig.sourceName,
     baseUrl: getString(localConfig.env.ANTHROPIC_BASE_URL),

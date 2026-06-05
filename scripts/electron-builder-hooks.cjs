@@ -16,6 +16,10 @@ function isMacTarget(context) {
   return context?.electronPlatformName === 'darwin';
 }
 
+function shouldPackageOpenClawRuntime() {
+  return process.env.WESIGHT_PACKAGE_OPENCLAW_RUNTIME === '1';
+}
+
 function resolveTargetArch(context) {
   if (context?.arch === 3) return 'arm64';
   if (context?.arch === 0) return 'ia32';
@@ -483,9 +487,13 @@ function installSkillDependencies() {
 }
 
 async function beforePack(context) {
-  if (!isMacTarget(context)) {
+  const packageOpenClawRuntime = shouldPackageOpenClawRuntime();
+  if (packageOpenClawRuntime) {
     ensureBundledOpenClawRuntime(context);
+  } else {
+    console.log('[electron-builder-hooks] Skipping bundled OpenClaw runtime packaging.');
   }
+
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();
 
@@ -501,8 +509,8 @@ async function beforePack(context) {
       );
     }
 
-    // Pack all large resource directories into a single tar for faster NSIS
-    // installation.  NSIS extracts thousands of small files very slowly on NTFS;
+    // Pack large Windows-only resources into a single tar for faster NSIS
+    // installation. NSIS extracts thousands of small files very slowly on NTFS;
     // a single tar archive is extracted by 7z almost instantly, and we unpack
     // it in the NSIS customInstall macro using Electron's Node runtime.
     const buildTarDir = path.join(__dirname, '..', 'build-tar');
@@ -510,11 +518,6 @@ async function beforePack(context) {
 
     const outputTar = path.join(buildTarDir, 'win-resources.tar');
     const sources = [
-      {
-        label: 'OpenClaw runtime',
-        dir: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'current'),
-        prefix: 'cfmind',
-      },
       {
         label: 'SKILLs',
         dir: path.join(__dirname, '..', 'SKILLs'),
@@ -526,6 +529,13 @@ async function beforePack(context) {
         prefix: 'python-win',
       },
     ];
+    if (packageOpenClawRuntime) {
+      sources.unshift({
+        label: 'OpenClaw runtime',
+        dir: path.join(__dirname, '..', 'vendor', 'openclaw-runtime', 'current'),
+        prefix: 'cfmind',
+      });
+    }
 
     console.log(`[electron-builder-hooks] Packing combined Windows tar: ${outputTar}`);
     const t0 = Date.now();
