@@ -22,8 +22,20 @@ import type {
   CoworkStore,
 } from '../../coworkStore';
 import { t } from '../../i18n';
-import { type ApiConfigOverride,resolveRawApiConfig } from '../claudeSettings';
+import { type ApiConfigOverride,resolveCodexWesightApiConfig, resolveRawApiConfig } from '../claudeSettings';
 import { getElectronNodeRuntimePath, getEnhancedEnvWithTmpdir } from '../coworkUtil';
+import {
+  acquireWesightClaudeRuntimeConfig,
+  applySingleClaudeCredentialEnv,
+  type ClaudeRuntimeConfigLease,
+  cleanupWesightManagedCodexConfig,
+  releaseWesightClaudeRuntimeConfig,
+} from '../externalAgentConfigSync';
+import {
+  buildWindowsCommandShimArgs,
+  isWindowsCommandShim,
+  resolveCliCommand,
+} from '../externalAgentEnvironment';
 import {
   applyLocalClaudeCodeEnvForPrintMode,
   buildClaudeCodeConfigDiagnostics,
@@ -54,6 +66,7 @@ const CLAUDE_NO_CONTENT_NOTICE_MS = 8_000;
 const CLAUDE_NO_CONTENT_TIMEOUT_MS = 120_000;
 const CODEX_NO_JSON_NOTICE_MS = 12_000;
 const CONTENT_TRUNCATED_HINT = '\n...[truncated to prevent memory pressure]';
+const STDERR_LOG_MAX_CHARS = 4_000;
 const WINDOWS_HIDE_INIT_SCRIPT_NAME = 'external_cli_windows_hide_init.cjs';
 const WINDOWS_HIDE_INIT_SCRIPT_CONTENT = [
   '\'use strict\';',
@@ -127,6 +140,7 @@ const CodexCliEventType = {
   ResponseItem: 'response_item',
   EventMessage: 'event_msg',
   TurnFailed: 'turn.failed',
+  TurnCompleted: 'turn.completed',
 } as const;
 
 const CodexCliItemType = {
@@ -141,9 +155,11 @@ type ActiveCliSession = {
   child: ChildProcessWithoutNullStreams;
   sessionId: string;
   cliSessionId: string | null;
+  startedAt: number;
   initialMessageCount: number;
   assistantMessageId: string | null;
   assistantContent: string;
+  assistantOutputStartedLogged: boolean;
   stderrTail: string;
   cliErrorMessage: string | null;
   sawEvent: boolean;
@@ -153,9 +169,11 @@ type ActiveCliSession = {
   noContentTimeoutTimer: ReturnType<typeof setTimeout> | null;
   imagePaths: string[];
   codexHomeDir: string | null;
+  claudeRuntimeConfigLease: ClaudeRuntimeConfigLease | null;
   localClaudeConfig: LocalClaudeCodeEnvLoadResult | null;
   configSource: ExternalAgentConfigSource;
   codexGeneratedImageIds: Set<string>;
+  completedFromEvent: boolean;
 };
 
 type ExternalCliRuntimeAdapterDeps = {
@@ -168,12 +186,23 @@ type SpawnCommandSpec = {
   command: string;
   args: string[];
   source: string;
+  windowsVerbatimArguments?: boolean;
 };
 
 type AssistantOutputStats = {
   messageCount: number;
   chars: number;
   bytes: number;
+};
+
+type CodexConfigLogSummary = {
+  source: 'temporary' | 'local';
+  configPath: string;
+  modelProvider: string;
+  model: string;
+  providerName: string;
+  serverUrl: string;
+  wireApi: string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -201,6 +230,14 @@ const firstString = (...values: unknown[]): string | null => {
     }
   }
   return null;
+};
+
+const chmodBestEffort = (targetPath: string, mode: number): void => {
+  try {
+    fs.chmodSync(targetPath, mode);
+  } catch {
+    // File permissions are a best-effort hardening layer across platforms.
+  }
 };
 
 const ensureWindowsChildProcessHideInitScript = (): string | null => {
@@ -312,7 +349,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       active.child.kill('SIGTERM');
       this.cleanupImagePaths(active.imagePaths);
       this.cleanupCodexHomeDir(active.codexHomeDir);
-      this.activeSessions.delete(sessionId);
+      this.releaseActiveSession(active);
     }
     this.store.updateSession(sessionId, { status: 'idle' });
     this.emit('sessionStopped', sessionId);
@@ -331,6 +368,28 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
 
   isSessionActive(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);
+  }
+
+  private releaseActiveSession(active: ActiveCliSession): void {
+    if (this.activeSessions.get(active.sessionId) === active) {
+      this.activeSessions.delete(active.sessionId);
+      this.releaseClaudeRuntimeConfig(active);
+    }
+  }
+
+  private releaseClaudeRuntimeConfig(active: ActiveCliSession): void {
+    if (!active.claudeRuntimeConfigLease) return;
+    try {
+      const restored = releaseWesightClaudeRuntimeConfig(active.claudeRuntimeConfigLease);
+      console.log('[ExternalCliRuntimeAdapter] released Claude Code runtime settings.', {
+        settingsPath: active.claudeRuntimeConfigLease.settingsPath,
+        restored,
+      });
+    } catch (error) {
+      console.warn('[ExternalCliRuntimeAdapter] failed to restore Claude Code runtime settings:', error);
+    } finally {
+      active.claudeRuntimeConfigLease = null;
+    }
   }
 
   getSessionConfirmationMode(_sessionId: string): 'modal' | 'text' | null {
@@ -397,6 +456,9 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     if (this.engine === CoworkAgentEngine.ClaudeCode && configSource === ExternalAgentConfigSource.LocalCli) {
       localClaudeConfig = applyLocalClaudeCodeEnvForPrintMode(env, selectedProvider);
     }
+    if (this.engine === CoworkAgentEngine.Codex && configSource === ExternalAgentConfigSource.LocalCli) {
+      cleanupWesightManagedCodexConfig();
+    }
     if (this.engine === CoworkAgentEngine.ClaudeCode && process.platform === 'win32') {
       const windowsHideInitScript = ensureWindowsChildProcessHideInitScript();
       if (windowsHideInitScript) {
@@ -410,7 +472,15 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       this.applyQwenCodeRuntimeConfig(env, apiConfigOverride);
     }
     const command = this.getCommandName();
-    const codexHomeDir = this.prepareCodexHomeForExecMode(env, selectedProvider, apiConfigOverride);
+    let codexHomeDir: string | null;
+    try {
+      codexHomeDir = this.prepareCodexHomeForExecMode(env, selectedProvider, apiConfigOverride);
+    } catch (error) {
+      this.cleanupImagePaths(imagePaths);
+      const message = error instanceof Error ? error.message : 'Failed to prepare Codex CLI configuration.';
+      this.handleError(sessionId, message);
+      return;
+    }
     const args = this.buildCommandArgs(
       cwd,
       effectivePrompt,
@@ -421,12 +491,49 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       apiConfigOverride,
       claudeCodePermissionMode,
     );
-    const spawnSpec = this.resolveSpawnCommandSpec(command, args, env);
+    const spawnSpec = await this.resolveSpawnCommandSpec(command, args, env);
+    let claudeRuntimeConfigLease: ClaudeRuntimeConfigLease | null = null;
+    if (this.engine === CoworkAgentEngine.ClaudeCode && configSource === ExternalAgentConfigSource.WesightModel) {
+      const apiKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '';
+      const baseURL = env.ANTHROPIC_BASE_URL || '';
+      const model = env.ANTHROPIC_MODEL
+        || env.ANTHROPIC_DEFAULT_SONNET_MODEL
+        || env.ANTHROPIC_SMALL_FAST_MODEL
+        || '';
+      if (!apiKey || !baseURL || !model) {
+        this.cleanupImagePaths(imagePaths);
+        this.cleanupCodexHomeDir(codexHomeDir);
+        this.handleError(sessionId, 'Claude Code could not use WeSight model config: missing API key, base URL, or model.');
+        return;
+      }
+      try {
+        claudeRuntimeConfigLease = acquireWesightClaudeRuntimeConfig({
+          apiKey,
+          baseURL,
+          model,
+          apiType: 'anthropic',
+        });
+        applySingleClaudeCredentialEnv(env, apiKey, claudeRuntimeConfigLease.credentialKey);
+        console.log('[ExternalCliRuntimeAdapter] prepared Claude Code runtime settings.', {
+          settingsPath: claudeRuntimeConfigLease.settingsPath,
+          credentialKey: claudeRuntimeConfigLease.credentialKey,
+          baseUrl: claudeRuntimeConfigLease.baseURL,
+          model: claudeRuntimeConfigLease.model,
+        });
+      } catch (error) {
+        this.cleanupImagePaths(imagePaths);
+        this.cleanupCodexHomeDir(codexHomeDir);
+        const message = error instanceof Error ? error.message : 'Failed to prepare Claude Code runtime settings.';
+        this.handleError(sessionId, message);
+        return;
+      }
+    }
     if (this.engine === CoworkAgentEngine.ClaudeCode) {
       console.log('[ExternalCliRuntimeAdapter] starting Claude Code CLI.', {
         command: spawnSpec.command,
         cwd,
         configSource,
+        spawnSource: spawnSpec.source,
         localConfig: this.describeLocalClaudeConfig(localClaudeConfig, configSource),
         permissionMode: claudeCodePermissionMode,
         baseUrl: env.ANTHROPIC_BASE_URL || '(not set)',
@@ -447,31 +554,53 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       );
     }
     if (this.engine === CoworkAgentEngine.Codex) {
+      const codexConfig = this.summarizeCodexConfigForLog(env, codexHomeDir);
       console.log('[ExternalCliRuntimeAdapter] starting Codex CLI.', {
         command: spawnSpec.command,
         cwd,
         configSource,
         usesTemporaryCodexHome: Boolean(codexHomeDir),
+        codexServerUrl: codexConfig.serverUrl,
+        codexConfig,
         proxyEnv: this.summarizeProxyEnv(env),
         spawnSource: spawnSpec.source,
         argsWithoutPrompt: spawnSpec.args.slice(0, -1),
         promptChars: effectivePrompt.length,
       });
     }
-    const child = spawn(spawnSpec.command, spawnSpec.args, {
-      cwd,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: process.platform === 'win32',
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(spawnSpec.command, spawnSpec.args, {
+        cwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: process.platform === 'win32',
+        windowsVerbatimArguments: spawnSpec.windowsVerbatimArguments,
+      });
+    } catch (error) {
+      this.cleanupImagePaths(imagePaths);
+      this.cleanupCodexHomeDir(codexHomeDir);
+      if (claudeRuntimeConfigLease) {
+        try {
+          releaseWesightClaudeRuntimeConfig(claudeRuntimeConfigLease);
+        } catch (releaseError) {
+          console.warn('[ExternalCliRuntimeAdapter] failed to restore Claude Code runtime settings after spawn failure:', releaseError);
+        }
+      }
+      const message = error instanceof Error ? error.message : 'Failed to spawn external CLI.';
+      this.handleError(sessionId, `${this.getEngineDisplayName()} failed to start: ${message}`);
+      return;
+    }
 
     const active: ActiveCliSession = {
       child,
       sessionId,
       cliSessionId: currentSession?.claudeSessionId ?? null,
+      startedAt: Date.now(),
       initialMessageCount: currentSession?.messages.length ?? 0,
       assistantMessageId: null,
       assistantContent: '',
+      assistantOutputStartedLogged: false,
       stderrTail: '',
       cliErrorMessage: null,
       sawEvent: false,
@@ -481,9 +610,11 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       noContentTimeoutTimer: null,
       imagePaths,
       codexHomeDir,
+      claudeRuntimeConfigLease,
       localClaudeConfig,
       configSource,
       codexGeneratedImageIds: new Set(),
+      completedFromEvent: false,
     };
     active.startupTimer = setTimeout(() => {
       if (active.sawEvent) return;
@@ -521,7 +652,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         this.clearSessionTimers(active);
         this.cleanupImagePaths(active.imagePaths);
         this.cleanupCodexHomeDir(active.codexHomeDir);
-        this.activeSessions.delete(sessionId);
+        this.releaseActiveSession(active);
         this.handleError(sessionId, `${this.getEngineDisplayName()} failed to start: ${error.message}`);
         resolve();
       });
@@ -536,8 +667,13 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
         this.finalizeAssistant(active);
         this.cleanupImagePaths(active.imagePaths);
         this.cleanupCodexHomeDir(active.codexHomeDir);
-        this.activeSessions.delete(sessionId);
+        this.releaseActiveSession(active);
         this.logCliProcessFinished(active, code, signal);
+
+        if (active.completedFromEvent) {
+          resolve();
+          return;
+        }
 
         if (this.stoppedSessions.has(sessionId)) {
           this.store.updateSession(sessionId, { status: 'idle' });
@@ -594,13 +730,30 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     if (this.engine !== CoworkAgentEngine.Codex) return false;
     if (code === 0) return false;
     if (!active.cliSessionId) return false;
-    if (active.assistantMessageId) return false;
+    if (active.assistantContent.trim()) return false;
     const stderr = active.stderrTail.toLowerCase();
     return stderr.includes('thread/resume')
       && (
         stderr.includes('no rollout found')
         || stderr.includes('thread/resume failed')
       );
+  }
+
+  private completeCodexSessionFromEvent(active: ActiveCliSession): void {
+    if (active.completedFromEvent) return;
+    if (this.store.getSession(active.sessionId)?.status === 'error') return;
+    active.completedFromEvent = true;
+    this.clearSessionTimers(active);
+    this.finalizeAssistant(active);
+    this.addCodexGeneratedImagesFromDirectory(active);
+    if (!this.hasVisibleOutput(active)) {
+      this.replaceAssistant(active, t('externalCliCodexNoVisibleOutput'), true);
+    }
+    this.store.updateSession(active.sessionId, { status: 'completed', claudeSessionId: active.cliSessionId });
+    this.applyTurnMemoryUpdates(active.sessionId);
+    this.releaseActiveSession(active);
+    this.emit('complete', active.sessionId, active.cliSessionId);
+    active.child.kill('SIGTERM');
   }
 
   private buildCommandArgs(
@@ -710,7 +863,8 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return args;
     }
 
-    if (cliSessionId) {
+    const canResumeCodexSession = this.getConfigSource() !== ExternalAgentConfigSource.WesightModel;
+    if (cliSessionId && canResumeCodexSession) {
       const resumeArgs = [
         'exec',
         'resume',
@@ -783,7 +937,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return this.getCurrentProvider?.('claude') ?? null;
     }
     if (this.engine === CoworkAgentEngine.Codex) {
-      return this.getCurrentProvider?.('codex') ?? null;
+      return null;
     }
     if (this.engine === CoworkAgentEngine.OpenCode) {
       return this.getCurrentProvider?.('opencode') ?? null;
@@ -826,11 +980,23 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     return 'qwen';
   }
 
-  private resolveSpawnCommandSpec(
+  private async resolveSpawnCommandSpec(
     command: string,
     args: string[],
     env: Record<string, string | undefined>,
-  ): SpawnCommandSpec {
+  ): Promise<SpawnCommandSpec> {
+    if (this.engine === CoworkAgentEngine.ClaudeCode && process.platform === 'win32') {
+      const resolution = await resolveCliCommand(command);
+      if (resolution.path) {
+        return this.buildResolvedWindowsCliSpawnSpec(resolution.path, args, 'agent-engine-command-resolution');
+      }
+      console.warn('[ExternalCliRuntimeAdapter] Claude Code CLI path resolution failed; falling back to PATH lookup.', {
+        error: resolution.error,
+        timedOut: resolution.timedOut,
+      });
+      return { command, args, source: 'path' };
+    }
+
     if (this.engine !== CoworkAgentEngine.Codex || process.platform !== 'win32') {
       return { command, args, source: 'path' };
     }
@@ -857,13 +1023,29 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     };
   }
 
+  private buildResolvedWindowsCliSpawnSpec(
+    commandPath: string,
+    args: string[],
+    source: string,
+  ): SpawnCommandSpec {
+    if (isWindowsCommandShim(commandPath)) {
+      return {
+        command: 'cmd.exe',
+        args: buildWindowsCommandShimArgs(commandPath, args),
+        source,
+        windowsVerbatimArguments: true,
+      };
+    }
+    return { command: commandPath, args, source };
+  }
+
   private resolveWindowsNodeRuntime(env: Record<string, string | undefined>): string | null {
     const candidates = [
       path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
       process.env['ProgramFiles(x86)'] ? path.join(process.env['ProgramFiles(x86)'] as string, 'nodejs', 'node.exe') : null,
       env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : null,
       process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : null,
-    ].filter((item): item is string => Boolean(item?.trim()));
+    ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 
     for (const candidate of candidates) {
       if (fs.existsSync(candidate)) {
@@ -978,17 +1160,23 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     env: Record<string, string | undefined>,
     apiConfigOverride?: ApiConfigOverride,
   ): string | null {
-    const resolved = resolveRawApiConfig(apiConfigOverride);
-    if (!resolved.config) return null;
-    if (resolved.config.apiType === 'anthropic') return null;
+    const resolved = resolveCodexWesightApiConfig('local', apiConfigOverride);
+    if (!resolved.config) {
+      throw new Error(`Codex CLI could not use WeSight model config: ${resolved.error ?? 'unknown configuration error'}`);
+    }
     const apiKey = resolved.config.apiKey.trim();
     const baseUrl = resolved.config.baseURL.trim();
-    if (!apiKey || !baseUrl) return null;
+    if (!apiKey || !baseUrl) {
+      throw new Error('Codex CLI could not use WeSight model config: missing API key or proxy base URL.');
+    }
 
     try {
       const providerName = resolved.providerMetadata?.providerName || 'wesight';
       const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wesight-codex-home-'));
-      fs.writeFileSync(path.join(codexHomeDir, 'auth.json'), `${JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)}\n`, 'utf8');
+      chmodBestEffort(codexHomeDir, 0o700);
+      const authPath = path.join(codexHomeDir, 'auth.json');
+      fs.writeFileSync(authPath, `${JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)}\n`, 'utf8');
+      chmodBestEffort(authPath, 0o600);
       fs.writeFileSync(
         path.join(codexHomeDir, 'config.toml'),
         this.buildCodexRuntimeConfig(providerName, baseUrl, resolved.config.model),
@@ -996,10 +1184,10 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       );
       env.CODEX_HOME = codexHomeDir;
       env.OPENAI_API_KEY = apiKey;
+      this.appendNoProxyHosts(env, ['127.0.0.1', 'localhost']);
       return codexHomeDir;
     } catch (error) {
-      console.warn('[ExternalCliRuntimeAdapter] Failed to prepare temporary Codex WeSight config:', error);
-      return null;
+      throw new Error('Failed to prepare temporary Codex WeSight config.', { cause: error });
     }
   }
 
@@ -1028,6 +1216,23 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return configText.replace(/^\s*model\s*=.*$/m, modelLine);
     }
     return `${modelLine}\n${configText}`;
+  }
+
+  private appendNoProxyHosts(env: Record<string, string | undefined>, hosts: string[]): void {
+    const existing = (env.NO_PROXY || env.no_proxy || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const normalized = new Set(existing.map((item) => item.toLowerCase()));
+    for (const host of hosts) {
+      if (!normalized.has(host.toLowerCase())) {
+        existing.push(host);
+        normalized.add(host.toLowerCase());
+      }
+    }
+    const value = existing.join(',');
+    env.NO_PROXY = value;
+    env.no_proxy = value;
   }
 
   private cleanupCodexHomeDir(codexHomeDir: string | null): void {
@@ -1075,6 +1280,82 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
 
   private tomlString(value: string): string {
     return JSON.stringify(value);
+  }
+
+  private summarizeCodexConfigForLog(
+    env: Record<string, string | undefined>,
+    codexHomeDir: string | null,
+  ): CodexConfigLogSummary {
+    const source = codexHomeDir ? 'temporary' : 'local';
+    const codexHome = codexHomeDir || env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const configPath = path.join(codexHome, 'config.toml');
+    const configText = this.readTextFileForLog(configPath);
+    const modelProvider = this.extractTomlString(configText, 'model_provider');
+    const model = this.extractTomlString(configText, 'model');
+    const providerBody = modelProvider
+      ? this.readTomlTableBody(configText, 'model_providers', modelProvider)
+      : '';
+    const providerName = this.extractTomlString(providerBody, 'name');
+    const baseUrl = this.extractTomlString(providerBody, 'base_url');
+    const wireApi = this.extractTomlString(providerBody, 'wire_api');
+
+    return {
+      source,
+      configPath,
+      modelProvider: modelProvider || '(not set)',
+      model: model || '(not set)',
+      providerName: providerName || modelProvider || '(not set)',
+      serverUrl: baseUrl ? this.sanitizeUrlForLog(baseUrl) : '(not configured)',
+      wireApi: wireApi || '(not set)',
+    };
+  }
+
+  private readTextFileForLog(filePath: string): string {
+    try {
+      return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private extractTomlString(configText: string, key: string): string {
+    const match = configText.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`, 'm'));
+    return match?.[1]?.trim() ?? '';
+  }
+
+  private readTomlTableBody(configText: string, tablePrefix: string, tableKey: string): string {
+    const escapedPrefix = tablePrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedKey = tableKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tableMatch = configText.match(
+      new RegExp(
+        `(?:^|\\r?\\n)\\s*\\[${escapedPrefix}\\.(?:"${escapedKey}"|'${escapedKey}'|${escapedKey})\\]\\s*\\r?\\n([\\s\\S]*?)(?=\\r?\\n\\s*\\[|(?![\\s\\S]))`,
+      ),
+    );
+    return tableMatch?.[1] ?? '';
+  }
+
+  private sanitizeUrlForLog(value: string): string {
+    const redacted = this.redactSensitiveTextForLog(value);
+    try {
+      const url = new URL(redacted);
+      if (url.username) url.username = 'redacted';
+      if (url.password) url.password = 'redacted';
+      for (const key of Array.from(url.searchParams.keys())) {
+        if (/token|secret|password|api[_-]?key|access[_-]?key/i.test(key)) {
+          url.searchParams.set(key, 'redacted');
+        }
+      }
+      return url.toString();
+    } catch {
+      return redacted;
+    }
+  }
+
+  private redactSensitiveTextForLog(value: string): string {
+    return value
+      .replace(/(authorization\s*[:=]\s*bearer\s+)([^\s"']+)/gi, '$1<redacted>')
+      .replace(/((?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\s*[:=]\s*["']?)([^\s"',}]+)/gi, '$1<redacted>')
+      .replace(/\b(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+/g, '$1...<redacted>');
   }
 
   private summarizeProxyEnv(env: Record<string, string | undefined>): Record<string, boolean> {
@@ -1301,6 +1582,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
   }
 
   private handleOutputLine(active: ActiveCliSession, line: string): void {
+    if (this.engine === CoworkAgentEngine.Codex && active.completedFromEvent) return;
     const trimmed = line.trim();
     if (!trimmed) return;
     try {
@@ -1363,7 +1645,9 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return;
     }
     if (type === CodexCliEventType.Error) {
-      this.handleError(active.sessionId, firstString(event.message, event.error) ?? 'Codex CLI returned an error.');
+      const message = firstString(event.message, event.error) ?? 'Codex CLI returned an error.';
+      active.cliErrorMessage = message;
+      active.stderrTail = this.appendStderrTail(active.stderrTail, `${message}\n`);
       return;
     }
     if (type === CodexCliEventType.ItemStarted && isRecord(event.item)) {
@@ -1388,7 +1672,14 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return;
     }
     if (type === CodexCliEventType.TurnFailed) {
+      active.completedFromEvent = true;
+      this.clearSessionTimers(active);
       this.handleError(active.sessionId, firstString(event.message, event.error) ?? 'Codex turn failed.');
+      active.child.kill('SIGTERM');
+      return;
+    }
+    if (type === CodexCliEventType.TurnCompleted) {
+      this.completeCodexSessionFromEvent(active);
     }
   }
 
@@ -1396,6 +1687,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
     const payloadType = String(payload.type ?? '');
     if (payloadType !== CodexCliItemType.ImageGenerationEnd) return;
     const imageId = firstString(payload.call_id, payload.id);
+    if (!imageId) return;
     this.handleCodexImageGenerationItem(active, {
       type: CodexCliItemType.ImageGenerationCall,
       id: imageId,
@@ -1881,13 +2173,13 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       return parts.length > 0 ? parts.join('') : null;
     }
     if (!isRecord(value)) return null;
-    const direct = firstString(value.text, value.message, value.content, value.output);
-    if (direct) return direct;
-    return this.extractCodexText(value.text)
-      ?? this.extractCodexText(value.message)
-      ?? this.extractCodexText(value.content)
-      ?? this.extractCodexText(value.output)
-      ?? this.extractCodexText(value.payload);
+    const direct = [value.text, value.message, value.content, value.output]
+      .map((item) => this.extractCodexText(item))
+      .filter((item): item is string => Boolean(item));
+    if (direct.length > 0) {
+      return direct.reduce((longest, item) => (item.length > longest.length ? item : longest));
+    }
+    return this.extractCodexText(value.payload);
   }
 
   private summarizeClaudeCliEvent(event: Record<string, unknown>): Record<string, unknown> {
@@ -2051,6 +2343,7 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
 
   private replaceAssistant(active: ActiveCliSession, content: string, isFinal: boolean): void {
     const safeContent = truncateLargeContent(content, STREAMING_TEXT_MAX_CHARS);
+    this.logAssistantOutputStarted(active, safeContent, isFinal);
     active.assistantContent = safeContent;
     if (!active.assistantMessageId) {
       const message = this.store.addMessage(active.sessionId, {
@@ -2076,6 +2369,21 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       metadata: { isStreaming: false, isFinal: true },
     });
     this.emit('messageUpdate', active.sessionId, active.assistantMessageId, active.assistantContent);
+  }
+
+  private logAssistantOutputStarted(active: ActiveCliSession, content: string, isFinal: boolean): void {
+    if (active.assistantOutputStartedLogged) return;
+    if (!content.trim()) return;
+    active.assistantOutputStartedLogged = true;
+    console.log('[ExternalCliRuntimeAdapter] CLI assistant output started.', {
+      engine: this.getEngineDisplayName(),
+      sessionId: active.sessionId,
+      cliSessionId: active.cliSessionId || '(not set)',
+      configSource: active.configSource,
+      elapsedMs: Math.max(0, Date.now() - active.startedAt),
+      outputChars: content.length,
+      isFinal,
+    });
   }
 
   private addToolMessage(
@@ -2174,7 +2482,19 @@ export class ExternalCliRuntimeAdapter extends EventEmitter implements CoworkRun
       hasAssistantOutput: assistantOutput.bytes > 0,
       hasVisibleOutput: this.hasVisibleOutput(active),
       stderrChars: active.stderrTail.length,
+      ...this.summarizeStderrForLog(active.stderrTail),
     });
+  }
+
+  private summarizeStderrForLog(stderrTail: string): Record<string, unknown> {
+    const trimmed = stderrTail.trim();
+    if (!trimmed) return {};
+    const redacted = this.redactSensitiveTextForLog(trimmed);
+    const truncated = redacted.length > STDERR_LOG_MAX_CHARS;
+    return {
+      stderrTail: truncated ? redacted.slice(-STDERR_LOG_MAX_CHARS) : redacted,
+      stderrTailTruncated: truncated,
+    };
   }
 
   private getEngineDisplayName(): string {
